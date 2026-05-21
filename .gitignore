@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Data / state (per-user)
+~/.tr-de-api/
+*.cookies.txt
+test_cookies.txt
+.env
+
+# Tests
+.pytest_cache/
+.coverage
