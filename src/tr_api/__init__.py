@@ -16,9 +16,10 @@ See README.md for the overall architecture.
 """
 from __future__ import annotations
 
-from . import account, cookies, profiles
+from . import account, cookies, portfolio, profiles, protocol
 from .account import AccountSummary
 from .client import API_BASE, APP_ORIGIN, TrClient
+from .protocol import TrWebSocket
 from .exceptions import (
     ApiError,
     AuthError,
@@ -41,6 +42,8 @@ __all__ = [
     "TrClient",
     "API_BASE",
     "APP_ORIGIN",
+    # WebSocket
+    "TrWebSocket",
     # Profile
     "Profile",
     # Account
@@ -48,7 +51,9 @@ __all__ = [
     # Sub-modules
     "account",
     "cookies",
+    "portfolio",
     "profiles",
+    "protocol",
     # Exceptions
     "TrApiError",
     "CookieError",
