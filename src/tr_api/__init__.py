@@ -16,7 +16,8 @@ See README.md for the overall architecture.
 """
 from __future__ import annotations
 
-from . import cookies, profiles
+from . import account, cookies, profiles
+from .account import AccountSummary
 from .client import API_BASE, APP_ORIGIN, TrClient
 from .exceptions import (
     ApiError,
@@ -42,7 +43,10 @@ __all__ = [
     "APP_ORIGIN",
     # Profile
     "Profile",
+    # Account
+    "AccountSummary",
     # Sub-modules
+    "account",
     "cookies",
     "profiles",
     # Exceptions
