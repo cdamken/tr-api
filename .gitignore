@@ -16,7 +16,7 @@ venv/
 .DS_Store
 
 # Data / state (per-user)
-~/.tr-de-api/
+~/.tr-api/
 *.cookies.txt
 test_cookies.txt
 .env

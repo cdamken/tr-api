@@ -1,0 +1,129 @@
+# tr-api CLI contract
+
+This document fixes the contract between the `tr-api` CLI and any caller
+(humans, shell scripts, the trade-republic-dashboard process). Stable
+exit codes and JSON shapes are what let the dashboard call us as a
+subprocess without parsing English error messages.
+
+## Output mode
+
+Every command supports two output modes:
+
+- **Default (human)** — pretty-formatted, may use color when stdout is a TTY.
+  Designed to be read by a person at a terminal.
+- **`--json`** — one JSON document on stdout, suitable for `jq`/scripts.
+  This is what the dashboard always uses.
+
+The dashboard always invokes us with `--json`.
+
+## Exit codes
+
+Every exit code maps to one exception class. Callers should rely on the
+numeric code, not on parsing stderr.
+
+| Code | Symbol                | Cause                                                                  |
+| ---- | --------------------- | ---------------------------------------------------------------------- |
+| 0    | OK                    | Command succeeded                                                      |
+| 1    | GENERIC_ERROR         | Unexpected exception (bug — should be rare)                            |
+| 2    | USAGE_ERROR           | Bad CLI arguments / flags                                              |
+| 10   | NO_ACTIVE_PROFILE     | `NoActiveProfile`: no `~/.tr-api/active`                               |
+| 11   | PROFILE_NOT_FOUND     | `ProfileNotFound`: asked for a phone that has no profile dir           |
+| 20   | MISSING_COOKIES       | `MissingSessionCookies`: cookies file absent or missing required names |
+| 21   | CHROME_NOT_FOUND      | `ChromeNotFound`: couldn't locate Chrome's cookie DB                   |
+| 22   | KEYCHAIN_DENIED       | `KeychainAccessDenied`: macOS Keychain refused decryption              |
+| 30   | SESSION_EXPIRED       | `SessionExpired`: TR returned 401, cookies are dead                    |
+| 31   | API_ERROR             | `ApiError`: TR returned non-2xx (rate-limit, 5xx, etc.)                |
+
+Codes 10–29 are "user fixable by running another tr-api command".
+Codes 30–39 are "user must re-login in Chrome and re-import cookies".
+
+## Error JSON shape (stderr, exit ≠ 0)
+
+```json
+{
+  "ok": false,
+  "error": "MissingSessionCookies",
+  "exit_code": 20,
+  "message": "Cookies file ~/.tr-api/profiles/+49…/cookies.txt is missing required auth cookies …",
+  "hint": "Run: tr-api auth import --phone +49…"
+}
+```
+
+Notes:
+- `error` is the exception class name (matches what Python would print).
+- `message` is the full one-line human description.
+- `hint` is the suggested next command when there is one. Optional.
+- `exit_code` mirrors the process exit code so a caller can read it from
+  the JSON alone if they want to.
+
+## Success JSON shape (stdout, exit 0)
+
+Every successful command returns a JSON object with at least:
+
+```json
+{ "ok": true, "data": <command-specific payload> }
+```
+
+The dashboard reads `result.ok` first, then `result.data`. Wrapping in
+`{ok, data}` keeps the contract uniform across commands and gives us
+room to add `warnings: []` or `meta: {…}` later without breaking callers.
+
+## Command surface (planned)
+
+Subcommands and their `data` payload shapes. Items marked TODO are
+not yet implemented.
+
+### `tr-api profiles list`
+
+```json
+{ "ok": true, "data": {
+    "active": "+49…",
+    "profiles": [
+      { "phone": "+49…", "jurisdiction": "DE", "name": "Personal",
+        "created_at": "2026-05-21T19:00:00+00:00", "has_cookies": true }
+    ]
+}}
+```
+
+### `tr-api profiles use <phone>`
+
+Sets the active profile. Payload echoes the new active profile metadata.
+
+### `tr-api profiles add <phone> [--name=…] [--jurisdiction=DE]`
+
+Creates an empty profile (no cookies yet). Caller then runs `auth import`.
+
+### `tr-api profiles remove <phone>`
+
+Deletes the profile directory.
+
+### `tr-api auth import [--phone=…] [--browser=chrome]`
+
+Reads cookies from Chrome, validates, saves to the profile's
+`cookies.txt`. Payload is `cookies.summarize(...)`.
+
+### `tr-api auth status [--phone=…]`
+
+Reports whether the saved cookies look complete. Does NOT contact TR.
+Payload: `cookies.summarize(...)` plus `cookies_file_mtime`.
+
+### `tr-api account [--phone=…]`  *(TODO Phase 5)*
+
+GET `/api/v2/auth/account`. Payload is the raw TR response.
+
+### `tr-api portfolio [--phone=…]`  *(TODO Phase 6)*
+
+WebSocket portfolio fetch. Payload is the merged portfolio snapshot.
+
+### `tr-api transactions [--since=YYYY-MM-DD] [--phone=…]`  *(TODO Phase 7)*
+
+Timeline transactions, optionally bounded. Payload is a list.
+
+## Stability guarantees
+
+- Exit codes 0–39 are part of the public contract — they will not be
+  renumbered without a major-version bump.
+- The `{ok, data}` / `{ok:false, error, exit_code, message}` envelope is
+  stable across all commands.
+- The shape of `data` for each command may grow (new keys) but existing
+  keys won't be removed or renamed in a minor release.
