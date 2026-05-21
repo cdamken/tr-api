@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tr-de-api-py"
+name = "tr-api"
 version = "0.1.0"
 description = "Minimal Python client for Trade Republic (DE) — cookie-based auth via browser, no headless workaround"
 readme = "README.md"
@@ -27,11 +27,11 @@ dependencies = [
 dev = ["pytest>=7", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-tr-de-api = "tr_de_api.cli:main"
+tr-de-api = "tr_api.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/cdamken/tr-de-api-py"
-Issues = "https://github.com/cdamken/tr-de-api-py/issues"
+Homepage = "https://github.com/cdamken/tr-api"
+Issues = "https://github.com/cdamken/tr-api/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

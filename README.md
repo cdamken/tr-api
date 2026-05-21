@@ -1,4 +1,4 @@
-# 🇩🇪 tr-de-api-py
+# tr-api
 
 Minimal Python client for the **Trade Republic** (Germany) backend API.
 
@@ -48,7 +48,7 @@ What it doesn't do:
 ┌──────────────────────────────────────────────────────────────────┐
 │  cookies.py — import_from_chrome(profile)                        │
 │  Uses pycookiecheat to read Chrome's encrypted cookie DB.        │
-│  Writes ~/.tr-de-api/profiles/<phone>/cookies.txt (Netscape fmt) │
+│  Writes ~/.tr-api/profiles/<phone>/cookies.txt (Netscape fmt) │
 └────────────────────┬─────────────────────────────────────────────┘
                      │
                      ↓
@@ -72,7 +72,7 @@ What it doesn't do:
 Pytr keeps cookies-per-phone but only one `credentials` file. We go full multi-account:
 
 ```
-~/.tr-de-api/
+~/.tr-api/
 ├── default               ← symlink to active profile
 └── profiles/
     ├── +4912345678/
@@ -88,10 +88,10 @@ Pytr keeps cookies-per-phone but only one `credentials` file. We go full multi-a
 
 CLI:
 ```bash
-tr-de-api profiles list
-tr-de-api profiles add        # imports cookies from Chrome for the current TR session
-tr-de-api profiles use <phone>  # switch active profile
-tr-de-api portfolio           # uses active profile
+tr-api profiles list
+tr-api profiles add        # imports cookies from Chrome for the current TR session
+tr-api profiles use <phone>  # switch active profile
+tr-api portfolio           # uses active profile
 ```
 
 We never store the PIN. Authentication comes entirely from session cookies obtained via the real browser.
@@ -101,7 +101,7 @@ We never store the PIN. Authentication comes entirely from session cookies obtai
 ## 📦 Module layout
 
 ```
-src/tr_de_api/
+src/tr_api/
 ├── __init__.py           # re-export public API
 ├── client.py             # TradeRepublic class (REST + WS calls)
 ├── cookies.py            # import/export Mozilla cookie jars from Chrome
@@ -111,7 +111,7 @@ src/tr_de_api/
 ├── transactions.py       # transaction history
 ├── account.py            # /api/v2/auth/account
 ├── exceptions.py         # AuthError, SessionExpired, ApiError, etc.
-└── cli.py                # `tr-de-api ...` command
+└── cli.py                # `tr-api ...` command
 ```
 
 ---
@@ -120,22 +120,22 @@ src/tr_de_api/
 
 ```bash
 # 1. Install (once we publish)
-pipx install tr-de-api-py
+pipx install tr-api
 
 # 2. Log in to TR in Chrome normally (one-time)
 open "https://app.traderepublic.com"
 
 # 3. Import cookies into a new profile
-tr-de-api profiles add
+tr-api profiles add
 
 # 4. Use the API
-tr-de-api portfolio
-tr-de-api transactions --last-days 7
+tr-api portfolio
+tr-api transactions --last-days 7
 ```
 
 Programmatic:
 ```python
-from tr_de_api import TradeRepublic
+from tr_api import TradeRepublic
 
 tr = TradeRepublic.from_profile("+4912345678")
 portfolio = tr.portfolio()
