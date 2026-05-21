@@ -16,7 +16,7 @@ See README.md for the overall architecture.
 """
 from __future__ import annotations
 
-from . import account, cookies, portfolio, profiles, protocol
+from . import account, cookies, portfolio, profiles, protocol, transactions
 from .account import AccountSummary
 from .client import API_BASE, APP_ORIGIN, TrClient
 from .protocol import TrWebSocket
@@ -54,6 +54,7 @@ __all__ = [
     "portfolio",
     "profiles",
     "protocol",
+    "transactions",
     # Exceptions
     "TrApiError",
     "CookieError",
