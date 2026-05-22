@@ -135,6 +135,138 @@ def history(client: TrClient, timeframe: str = "1y") -> dict[str, Any]:
     return asyncio.run(_fetch(client, "portfolioAggregateHistory", range=timeframe))
 
 
+async def _snapshot_full_async(
+    client: TrClient,
+    *,
+    timeout: float = 90.0,
+) -> dict[str, Any]:
+    """Single-connection multi-step fetch — gives back a portfolio with
+    names and live prices on every position.
+
+    Sequence on one WS:
+      1. compactPortfolio + cash         (2 subs)
+      2. instrument per ISIN             (N subs, gives name + exchangeIds)
+      3. ticker per "ISIN.EXCHANGE"      (N subs, gives current price)
+
+    Total: 2 + 2N subscriptions over one connection — much cheaper than
+    opening many WS sessions (which TR flags as bot-like). Result shape:
+
+        {
+          "portfolio": {"positions": [
+              {instrumentId, netSize, averageBuyIn,
+               name, exchangeIds, currentPrice, ...},
+              ...
+          ]},
+          "cash": <cash payload>,
+        }
+
+    instrumentId / netSize / averageBuyIn come from compactPortfolio (as
+    strings — TR uses decimal strings to avoid float drift). name and
+    exchangeIds come from the instrument topic; currentPrice comes from
+    the ticker topic. Positions where instrument or ticker doesn't return
+    in time are still present with whatever fields we got — callers
+    should treat name/price as optional.
+    """
+    async with TrWebSocket(client.session.cookies) as ws:
+        # Step 1: portfolio + cash together
+        first = await ws.batch_fetch(
+            [{"type": TOPIC_COMPACT_PORTFOLIO}, {"type": TOPIC_CASH}],
+            timeout=15,
+        )
+        compact = first[0] or {}
+        cash = first[1]
+
+        positions = list(compact.get("positions") or [])
+        if not positions:
+            return {"portfolio": {"positions": []}, "cash": cash}
+
+        isins = [str(p.get("instrumentId") or "") for p in positions]
+
+        # Step 2: instrument details for each ISIN -> name + exchangeIds
+        instrument_payloads = [{"type": "instrument", "id": isin} for isin in isins if isin]
+        instruments = await ws.batch_fetch(instrument_payloads, timeout=timeout)
+        instrument_by_isin: dict[str, dict[str, Any]] = {}
+        for isin, inst in zip([i for i in isins if i], instruments):
+            if isinstance(inst, dict):
+                instrument_by_isin[isin] = inst
+
+        # Step 3: ticker per ISIN+exchange -> currentPrice
+        ticker_payloads: list[dict[str, Any]] = []
+        ticker_keys: list[str] = []   # parallel list to ticker_payloads, indexed by isin
+        for isin in isins:
+            inst = instrument_by_isin.get(isin) or {}
+            exchanges = inst.get("exchangeIds") or inst.get("exchanges") or []
+            # exchangeIds is usually a list of strings like ["LSX", "TDG", ...].
+            # Pick the first; TR sorts them by preference for the user's jurisdiction.
+            exchange = None
+            if isinstance(exchanges, list) and exchanges:
+                first_ex = exchanges[0]
+                if isinstance(first_ex, str):
+                    exchange = first_ex
+                elif isinstance(first_ex, dict):
+                    exchange = first_ex.get("slug") or first_ex.get("id")
+            if isin and exchange:
+                ticker_payloads.append({"type": "ticker", "id": f"{isin}.{exchange}"})
+                ticker_keys.append(isin)
+
+        ticker_results = await ws.batch_fetch(ticker_payloads, timeout=timeout)
+        ticker_by_isin: dict[str, dict[str, Any]] = {}
+        for isin, tick in zip(ticker_keys, ticker_results):
+            if isinstance(tick, dict):
+                ticker_by_isin[isin] = tick
+
+        # Merge everything back into positions
+        merged: list[dict[str, Any]] = []
+        for raw in positions:
+            isin = str(raw.get("instrumentId") or "")
+            inst = instrument_by_isin.get(isin) or {}
+            tick = ticker_by_isin.get(isin) or {}
+            # Pull a sensible "name" out of the instrument record. TR puts
+            # the display name in different places depending on instrument
+            # type (shortName for stocks/ETFs, name elsewhere; derivatives
+            # have it nested under derivativeInfo).
+            name = (
+                inst.get("shortName")
+                or inst.get("name")
+                or (inst.get("derivativeInfo") or {}).get("underlying", {}).get("shortName")
+                or ""
+            )
+            current_price = None
+            bid = tick.get("bid") if isinstance(tick, dict) else None
+            ask = tick.get("ask") if isinstance(tick, dict) else None
+            last = tick.get("last") if isinstance(tick, dict) else None
+            # `bid`/`ask`/`last` are typically {"price": "12.34", ...}.
+            if isinstance(last, dict) and last.get("price") is not None:
+                current_price = last.get("price")
+            elif isinstance(bid, dict) and bid.get("price") is not None:
+                current_price = bid.get("price")
+            elif isinstance(ask, dict) and ask.get("price") is not None:
+                current_price = ask.get("price")
+
+            merged.append({
+                **raw,
+                "isin": isin,
+                "name": name,
+                "exchangeIds": inst.get("exchangeIds") or [],
+                "currentPrice": current_price,
+            })
+
+        return {
+            "portfolio": {"positions": merged},
+            "cash": cash,
+        }
+
+
+def snapshot_full(client: TrClient, *, timeout: float = 90.0) -> dict[str, Any]:
+    """Sync wrapper for the full multi-subscription portfolio fetch.
+
+    Use this when you want names + live prices for every position. Slower
+    than snapshot() (one WS but 2N+2 subs), but the result is what a
+    dashboard actually needs to render rows.
+    """
+    return asyncio.run(_snapshot_full_async(client, timeout=timeout))
+
+
 def snapshot(
     client: TrClient,
     *,

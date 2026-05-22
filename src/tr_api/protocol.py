@@ -204,8 +204,82 @@ class TrWebSocket:
         return result
 
     # -----------------------------------------------------------------
-    # High-level helper
+    # High-level helpers
     # -----------------------------------------------------------------
+    async def batch_fetch(
+        self,
+        payloads: list[dict[str, Any]],
+        *,
+        timeout: float = 60.0,
+        ignore_errors: bool = True,
+    ) -> list[Any]:
+        """Subscribe to many topics on one WS, collect the first Answer for each.
+
+        Returns a list aligned to `payloads`. Each element is the parsed JSON
+        body of the Answer frame for that subscription, or — if the
+        subscription errored and `ignore_errors=True` — `None`. If
+        `ignore_errors=False`, an erroring sub raises ApiError immediately.
+
+        This is what makes "get the whole portfolio with names + prices" fast:
+        send 600+ subscribes up-front, then drain the responses as they come
+        back. Doing one fetch_one() per ISIN would mean 600+ WS connections
+        and is what gets you flagged with WS close 3003 "registered".
+
+        Frames for unknown/already-resolved subscription ids are silently
+        dropped (deltas, late closes, etc.). We only look at the first
+        Answer per sub.
+        """
+        if not payloads:
+            return []
+
+        assert self._ws is not None, "Call connect() first"
+
+        # Fire all subscribes (sequential send, but doesn't await answers)
+        sub_ids: list[str] = []
+        for p in payloads:
+            sid = await self.subscribe(p)
+            sub_ids.append(sid)
+
+        results: dict[str, Any] = {}
+        wanted: set[str] = set(sub_ids)
+
+        async def _drain() -> None:
+            while wanted:
+                rid, code, body = await self.recv()
+                if rid not in wanted:
+                    continue
+                if code == "A":
+                    self._last_payload[rid] = body
+                    results[rid] = json.loads(body) if body else {}
+                    wanted.discard(rid)
+                elif code == "E":
+                    err = json.loads(body) if body else {}
+                    if ignore_errors:
+                        results[rid] = None
+                        wanted.discard(rid)
+                    else:
+                        raise ApiError(
+                            f"TR rejected subscription: {err}",
+                            body=body,
+                        )
+                elif code == "C":
+                    # Close without Answer — treat as missing.
+                    results[rid] = None
+                    wanted.discard(rid)
+                # 'D' frames before an Answer are ignored (shouldn't happen).
+
+        try:
+            await asyncio.wait_for(_drain(), timeout=timeout)
+        finally:
+            # Unsubscribe everything to keep TR happy. Errors here don't matter.
+            for sid in sub_ids:
+                try:
+                    await self.unsubscribe(sid)
+                except Exception:
+                    pass
+
+        return [results.get(sid) for sid in sub_ids]
+
     async def fetch_one(
         self,
         payload: dict[str, Any],
