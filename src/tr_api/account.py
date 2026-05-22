@@ -31,16 +31,32 @@ ENDPOINT = "/api/v2/auth/account"
 
 @dataclass
 class AccountSummary:
-    """Tolerant view of /api/v2/auth/account. Every field is optional."""
-    user_id: str | None = None
+    """Tolerant view of /api/v2/auth/account. Every field is optional.
+
+    Field mapping verified against the live response (May 2026):
+      personId           → person_id
+      name {first,last}  → user_name (joined)
+      phoneNumber        → phone_number
+      jurisdiction       → jurisdiction
+      postalAddress.country → country_of_residence
+      mainNationality    → nationality
+      cashAccount.iban   → iban
+      securitiesAccountNumber → securities_account_number
+      birthdate          → birthdate
+      email.address      → email
+    Many other fields (taxInformation, experience, …) live in `raw`.
+    """
+    person_id: str | None = None
     user_name: str | None = None
     phone_number: str | None = None
-    jurisdiction: str | None = None       # "DE", "AT", …
+    jurisdiction: str | None = None
     country_of_residence: str | None = None
-    language: str | None = None           # "en", "de", …
-    currency: str | None = None           # "EUR", …
-    experience_flow_completed: bool | None = None
-    raw: dict[str, Any] | None = None     # the full response, in case caller wants more
+    nationality: str | None = None
+    iban: str | None = None
+    securities_account_number: str | None = None
+    birthdate: str | None = None
+    email: str | None = None
+    raw: dict[str, Any] | None = None
 
 
 def fetch(client: TrClient) -> dict[str, Any]:
@@ -53,17 +69,38 @@ def fetch(client: TrClient) -> dict[str, Any]:
 
 
 def summary(client: TrClient) -> AccountSummary:
-    """Pick out the commonly-useful fields. All fields tolerate absence."""
+    """Pick out the commonly-useful fields. Every field tolerates absence."""
     data = fetch(client)
+
+    name_obj = data.get("name") or {}
+    if isinstance(name_obj, dict):
+        parts = [name_obj.get("first"), name_obj.get("last")]
+        user_name = " ".join(p for p in parts if p) or None
+    elif isinstance(name_obj, str):
+        user_name = name_obj or None
+    else:
+        user_name = None
+
+    addr = data.get("postalAddress") or {}
+    country = addr.get("country") if isinstance(addr, dict) else None
+
+    cash_acc = data.get("cashAccount") or {}
+    iban = cash_acc.get("iban") if isinstance(cash_acc, dict) else None
+
+    email_obj = data.get("email") or {}
+    email = email_obj.get("address") if isinstance(email_obj, dict) else None
+
     return AccountSummary(
-        user_id=data.get("userId"),
-        user_name=data.get("userName"),
+        person_id=data.get("personId") or data.get("userId"),
+        user_name=user_name,
         phone_number=data.get("phoneNumber"),
         jurisdiction=data.get("jurisdiction"),
-        country_of_residence=data.get("countryOfResidence"),
-        language=data.get("language"),
-        currency=data.get("currencyId") or data.get("currency"),
-        experience_flow_completed=data.get("experienceFlowCompleted"),
+        country_of_residence=country,
+        nationality=data.get("mainNationality"),
+        iban=iban,
+        securities_account_number=data.get("securitiesAccountNumber"),
+        birthdate=data.get("birthdate"),
+        email=email,
         raw=data,
     )
 
