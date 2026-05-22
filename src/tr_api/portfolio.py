@@ -19,10 +19,32 @@ access can layer their own dataclasses on top.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from .client import TrClient
 from .protocol import TrWebSocket
+
+# Bond-name pattern: TR names fixed-income instruments after their maturity
+# month + year, e.g. "Aug 2040", "Januar 2030", "Mar. 2027". Used to decide
+# whether to apply the per-100-face-value scaling to the ticker price.
+# Mirrors pytr's regex (same approach, same months in EN + DE).
+_BOND_NAME_RE = re.compile(
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|"
+    r"January|February|March|April|June|July|August|September|October|November|December|"
+    r"Januar|Februar|März|Mai|Juni|Juli|Oktober|Dezember)"
+    r"\.?\s+20\d{2}",
+    re.IGNORECASE,
+)
+
+
+def _is_bond_name(name: str) -> bool:
+    """Heuristic: TR labels fixed-income holdings by their maturity month +
+    year, which is how pytr distinguishes them too. Not perfect (an equity
+    happening to be named "May 2030 Corp" would match), but cheap and
+    catches every government / corporate bond in practice.
+    """
+    return bool(name) and bool(_BOND_NAME_RE.search(name))
 
 # Topic constants — string literals are a footgun; centralize them.
 #
@@ -243,12 +265,24 @@ async def _snapshot_full_async(
             elif isinstance(ask, dict) and ask.get("price") is not None:
                 current_price = ask.get("price")
 
+            # Bond price scaling: TR ticker quotes bonds as a percentage of
+            # face value (so a price of "61.31" means 61.31% of nominal,
+            # i.e. €0.6131 per unit). Apply the /100 fix here so the caller
+            # can do plain `price × qty` and get the right netValue. This
+            # matches what pytr does in portfolio.py:179.
+            if current_price is not None and _is_bond_name(name):
+                try:
+                    current_price = str(float(current_price) / 100.0)
+                except (TypeError, ValueError):
+                    pass
+
             merged.append({
                 **raw,
                 "isin": isin,
                 "name": name,
                 "exchangeIds": inst.get("exchangeIds") or [],
                 "currentPrice": current_price,
+                "isBond": _is_bond_name(name),
             })
 
         return {
