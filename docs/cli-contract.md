@@ -32,10 +32,14 @@ numeric code, not on parsing stderr.
 | 21   | CHROME_NOT_FOUND      | `ChromeNotFound`: couldn't locate Chrome's cookie DB                   |
 | 22   | KEYCHAIN_DENIED       | `KeychainAccessDenied`: macOS Keychain refused decryption              |
 | 30   | SESSION_EXPIRED       | `SessionExpired`: TR returned 401, cookies are dead                    |
-| 31   | API_ERROR             | `ApiError`: TR returned non-2xx (rate-limit, 5xx, etc.)                |
+| 31   | API_ERROR             | `ApiError`: TR returned non-2xx (5xx, etc.)                            |
+| 40   | INVALID_CREDENTIALS   | `InvalidCredentials`: PIN, phone, or 4-digit code rejected             |
+| 41   | RATE_LIMITED          | `RateLimited`: TR account cooldown after failed login attempts         |
+| 42   | WAF_TOKEN_FAILED      | `WafTokenError`: couldn't get a WAF token (Playwright missing/broken)  |
 
 Codes 10–29 are "user fixable by running another tr-api command".
-Codes 30–39 are "user must re-login in Chrome and re-import cookies".
+Codes 30–39 are "user must re-authenticate".
+Codes 40–49 are "login/credential problems".
 
 ## Error JSON shape (stderr, exit ≠ 0)
 
@@ -97,10 +101,43 @@ Creates an empty profile (no cookies yet). Caller then runs `auth import`.
 
 Deletes the profile directory.
 
+### `tr-api auth login [--phone=…] [--pin=…] [--code=…] [--name=…] [--jurisdiction=DE]`
+
+**Programmatic login — recommended path.** Launches headless Chromium
+under our control to get a fresh AWS WAF token, then runs the standard
+`/api/v1/auth/web/login` flow. The user never has to open Chrome
+themselves.
+
+Flow:
+  1. Resolve / create profile.
+  2. Resolve PIN (`--pin`, `TR_API_PIN` env, or interactive prompt).
+  3. POST `/api/v1/auth/web/login` → `processId`. TR sends a 4-digit
+     code as a push notification to the user's TR mobile app.
+  4. Resolve code (`--code`, `TR_API_CODE` env, or interactive prompt).
+  5. POST `/api/v1/auth/web/login/{processId}/{code}` → session cookies.
+  6. Save cookies, set profile active if none was.
+
+Payload on success:
+```json
+{
+  "phone": "+49…",
+  "process_id": "…",
+  "two_factor_method": "APP" | "SMS" | null,
+  "cookies_saved": <n>,
+  "cookies_file": "/Users/.../cookies.txt",
+  "summary": <cookies.summarize result>,
+  "set_active": true
+}
+```
+
+Common error exits: 40 (bad PIN / wrong code), 41 (rate-limited — also
+includes `next_attempt_at` in stderr), 42 (Playwright missing).
+
 ### `tr-api auth import [--phone=…] [--browser=chrome]`
 
-Reads cookies from Chrome, validates, saves to the profile's
-`cookies.txt`. Payload is `cookies.summarize(...)`.
+**Legacy path.** Reads cookies from a Chrome session the user logged
+into manually. Use this only if `auth login` is unavailable or you
+want to reuse an existing browser session. Payload is `cookies.summarize(...)`.
 
 ### `tr-api auth status [--phone=…]`
 

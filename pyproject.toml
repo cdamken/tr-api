@@ -24,7 +24,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+# Programmatic login (avoids the user ever having to open Chrome themselves):
+# launches headless Chromium under our control to fetch a fresh AWS WAF token,
+# then runs the standard /api/v1/auth/web/login flow. Without this extra, the
+# library still works via `auth import` (cookies from the user's own Chrome).
+browser = ["playwright>=1.40"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "playwright>=1.40"]
 
 [project.scripts]
 tr-api = "tr_api.cli:main"

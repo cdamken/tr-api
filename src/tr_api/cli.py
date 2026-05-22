@@ -18,14 +18,17 @@ Entry point is `main()`, registered as `tr-api` in pyproject.toml.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import account, cookies, portfolio, profiles, transactions
+from . import account, auth, cookies, portfolio, profiles, transactions
+from .auth import InvalidCredentials, LoginError, RateLimited
 from .client import TrClient
 from .exceptions import (
     ApiError,
@@ -38,6 +41,7 @@ from .exceptions import (
     TrApiError,
 )
 from .profiles import Profile
+from .waf import WafTokenError
 
 # Exit-code contract. See docs/cli-contract.md.
 EXIT_OK = 0
@@ -50,23 +54,34 @@ EXIT_CHROME_NOT_FOUND = 21
 EXIT_KEYCHAIN_DENIED = 22
 EXIT_SESSION_EXPIRED = 30
 EXIT_API_ERROR = 31
+EXIT_INVALID_CREDENTIALS = 40
+EXIT_RATE_LIMITED = 41
+EXIT_WAF_TOKEN_FAILED = 42
 
 # Map exception classes → (exit_code, hint). Order matters: more specific
 # classes first.
 _ERR_TABLE: list[tuple[type[BaseException], int, str | None]] = [
     (NoActiveProfile,       EXIT_NO_ACTIVE_PROFILE,
-        "Run `tr-api profiles use <phone>` or `tr-api auth import --phone <phone>`."),
+        "Run `tr-api profiles use <phone>` or `tr-api auth login --phone <phone>`."),
     (ProfileNotFound,       EXIT_PROFILE_NOT_FOUND,
         "List existing profiles with `tr-api profiles list`."),
     (MissingSessionCookies, EXIT_MISSING_COOKIES,
-        "Run `tr-api auth import` to (re-)read cookies from Chrome."),
+        "Run `tr-api auth login` (recommended) or `tr-api auth import` "
+        "to (re-)obtain cookies."),
     (KeychainAccessDenied,  EXIT_KEYCHAIN_DENIED,
         "Look for a Keychain dialog on screen and click 'Always Allow'."),
     (ChromeNotFound,        EXIT_CHROME_NOT_FOUND,
         "Make sure Chrome is installed and you've used it at least once."),
     (SessionExpired,        EXIT_SESSION_EXPIRED,
-        "Open https://app.traderepublic.com in Chrome, log in, then "
-        "`tr-api auth import`."),
+        "Run `tr-api auth login` to log in again."),
+    (InvalidCredentials,    EXIT_INVALID_CREDENTIALS,
+        "Double-check the phone number and PIN, or the 4-digit code from your phone."),
+    (RateLimited,           EXIT_RATE_LIMITED,
+        "Trade Republic rate-limited login for this account. Wait for the "
+        "cooldown to expire and retry."),
+    (WafTokenError,         EXIT_WAF_TOKEN_FAILED,
+        "Install Playwright + Chromium: `pip install 'tr-api[browser]' && "
+        "playwright install chromium`."),
     (ApiError,              EXIT_API_ERROR, None),
     (TrApiError,            EXIT_GENERIC, None),
 ]
@@ -207,6 +222,75 @@ def cmd_auth_import(args: argparse.Namespace) -> Any:
         profiles.set_active(p.phone)
         summary["set_active"] = True
     return summary
+
+
+def cmd_auth_login(args: argparse.Namespace) -> Any:
+    """Programmatic login: PIN + 4-digit code from TR mobile app push.
+
+    Flow:
+      1. Resolve target profile (create if --phone given for a new one).
+      2. Resolve PIN (--pin → env TR_API_PIN → interactive prompt).
+      3. waf.get_waf_token() launches headless Chromium under our control.
+      4. POST /api/v1/auth/web/login → processId. TR sends a 4-digit code
+         as a push notification to the user's TR mobile app.
+      5. Resolve code (--code → env TR_API_CODE → interactive prompt).
+      6. POST /api/v1/auth/web/login/{processId}/{code} → session cookies.
+      7. Save cookies to the profile and set active.
+    """
+    # 1. Profile
+    if args.phone:
+        try:
+            p = profiles.load(args.phone)
+        except ProfileNotFound:
+            p = profiles.create(
+                args.phone,
+                jurisdiction=args.jurisdiction or "DE",
+                name=args.name,
+            )
+    else:
+        p = profiles.get_active()  # raises NoActiveProfile if none
+
+    # 2. PIN
+    pin = args.pin or os.environ.get("TR_API_PIN")
+    if not pin:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "PIN required. Pass --pin, set TR_API_PIN, or run interactively."
+            )
+        pin = getpass.getpass(f"PIN for {p.phone}: ")
+    if not pin:
+        raise SystemExit("PIN cannot be empty.")
+
+    # 3-6. The flow.
+    def code_provider(init: auth.InitiateResult) -> str:
+        # Print the "code sent" announcement to stderr so JSON mode keeps
+        # stdout clean — but skip it entirely in --json mode (the dashboard
+        # would never see the prompt anyway).
+        if not args.json_mode:
+            method = init.two_factor_method or "phone push"
+            sys.stderr.write(
+                f"\n→ Trade Republic sent a 4-digit code to your {method}. "
+                f"It expires in {init.countdown_seconds}s.\n"
+            )
+        code = args.code or os.environ.get("TR_API_CODE")
+        if code:
+            return code
+        if not sys.stdin.isatty():
+            # Non-interactive: read one line.
+            line = sys.stdin.readline().strip()
+            if not line:
+                raise SystemExit("No code on stdin. Pass --code or set TR_API_CODE.")
+            return line
+        return input("Code from phone: ").strip()
+
+    result = auth.login_flow(p, pin, code_provider)
+
+    # If no profile was active before, make this one active.
+    if profiles.get_active_phone() is None:
+        profiles.set_active(p.phone)
+        result["set_active"] = True
+
+    return result
 
 
 def cmd_auth_status(args: argparse.Namespace) -> Any:
@@ -351,7 +435,22 @@ def _build_parser() -> argparse.ArgumentParser:
     ap = sub.add_parser("auth", help="Manage session cookies")
     ap_sub = ap.add_subparsers(dest="auth_cmd", required=True)
 
-    sp = ap_sub.add_parser("import", help="Read cookies from Chrome and save")
+    sp = ap_sub.add_parser("login", help="Programmatic login (no Chrome needed) — recommended")
+    sp.add_argument("--phone", default=None,
+                    help="Profile to save into. Creates the profile if it doesn't exist. "
+                         "Defaults to the active profile.")
+    sp.add_argument("--pin", default=None,
+                    help="PIN (omit to be prompted; also reads TR_API_PIN env var).")
+    sp.add_argument("--code", default=None,
+                    help="4-digit code from the TR mobile-app push "
+                         "(omit to be prompted; also reads TR_API_CODE env var).")
+    sp.add_argument("--name", default=None,
+                    help="Display name (only used if creating a new profile).")
+    sp.add_argument("--jurisdiction", default=None,
+                    help="Country code (only used if creating a new profile; default DE).")
+    sp.set_defaults(func=cmd_auth_login)
+
+    sp = ap_sub.add_parser("import", help="Read cookies from Chrome and save (legacy path)")
     sp.add_argument("--phone", default=None,
                     help="Profile to save into (default: active)")
     sp.add_argument("--browser", default="chrome",

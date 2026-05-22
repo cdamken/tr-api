@@ -16,8 +16,15 @@ See README.md for the overall architecture.
 """
 from __future__ import annotations
 
-from . import account, cookies, portfolio, profiles, protocol, transactions
+from . import account, auth, cookies, portfolio, profiles, protocol, transactions, waf
 from .account import AccountSummary
+from .auth import (
+    CompleteResult,
+    InitiateResult,
+    InvalidCredentials,
+    LoginError,
+    RateLimited,
+)
 from .client import API_BASE, APP_ORIGIN, TrClient
 from .protocol import TrWebSocket
 from .exceptions import (
@@ -34,6 +41,7 @@ from .exceptions import (
     TrApiError,
 )
 from .profiles import Profile
+from .waf import WafToken, WafTokenError
 
 __version__ = "0.1.0"
 
@@ -48,13 +56,20 @@ __all__ = [
     "Profile",
     # Account
     "AccountSummary",
+    # WAF / login
+    "WafToken",
+    "WafTokenError",
+    "InitiateResult",
+    "CompleteResult",
     # Sub-modules
     "account",
+    "auth",
     "cookies",
     "portfolio",
     "profiles",
     "protocol",
     "transactions",
+    "waf",
     # Exceptions
     "TrApiError",
     "CookieError",
@@ -67,6 +82,9 @@ __all__ = [
     "AuthError",
     "SessionExpired",
     "ApiError",
+    "LoginError",
+    "InvalidCredentials",
+    "RateLimited",
     # Meta
     "__version__",
 ]
