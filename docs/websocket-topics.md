@@ -98,19 +98,25 @@ the historical Buy/Sell/Dividend rows from the pytr era stay in
 `account_transactions.csv` (incremental merges don't wipe them). New
 trades after the pytr→tr-api migration silently stop being collected.
 
-### Fix (planned)
+### Fix (shipped in `tr_api.activity_log`)
 
-A new `tr_api.activity_log` module that mirrors `transactions.py` but
-uses `TOPIC = "timelineActivityLog"`. Same `fetch_all` / `fetch_since` /
+`tr_api.activity_log` mirrors `transactions.py` but uses
+`TOPIC = "timelineActivityLog"`. Same `fetch_all` / `fetch_since` /
 `fetch_until_id` surface, same pagination logic, different payload
-type. Downstream callers do:
+stream. Downstream callers do:
 
 ```python
 from tr_api import transactions, activity_log
 recent = transactions.fetch_since(client, cutoff) + activity_log.fetch_since(client, cutoff)
 ```
 
-Tracking in [issue #?](https://github.com/cdamken/tr-api/issues).
+The two streams are disjoint by `eventType` for most accounts, so naïve
+concatenation works. Dedupe on `item['id']` if you want belt-and-braces.
+
+> Reference downstream wiring:
+> [`trade-republic-dashboard@4ba866d`](https://github.com/cdamken/trade-republic-dashboard/commit/4ba866d)
+> patches `tr_fetch.py::fetch_transactions` to call both modules and
+> union their items into `account_transactions.csv`.
 
 ---
 
