@@ -16,7 +16,17 @@ See README.md for the overall architecture.
 """
 from __future__ import annotations
 
-from . import account, auth, cookies, portfolio, profiles, protocol, transactions, waf
+from . import (
+    account,
+    activity_log,
+    auth,
+    cookies,
+    portfolio,
+    profiles,
+    protocol,
+    transactions,
+    waf,
+)
 from .account import AccountSummary
 from .auth import (
     CompleteResult,
@@ -63,6 +73,7 @@ __all__ = [
     "CompleteResult",
     # Sub-modules
     "account",
+    "activity_log",
     "auth",
     "cookies",
     "portfolio",
