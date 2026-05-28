@@ -76,15 +76,18 @@ src/tr_api/
 ├── cli.py             ← `tr-api ...` command
 ├── client.py          ← TrClient (authenticated REST)
 ├── cookies.py         ← import_from_chrome / save / load / validate
+├── documents.py       ← bulk PDF download (combines transactions + activity_log + timeline_detail)
 ├── exceptions.py      ← hierarchy: TrApiError → AuthError / ApiError / ...
 ├── portfolio.py       ← snapshot() and snapshot_full() (WS)
 ├── profiles.py        ← multi-account profile management
 ├── protocol.py        ← TrWebSocket (async, low-level)
+├── timeline_detail.py ← timelineDetailV2 + extract_documents helper
 ├── transactions.py    ← timelineTransactions topic
 └── waf.py             ← AWS WAF token via Playwright
 docs/
 ├── auth-modes.md          ← cookie-import vs programmatic-login
 ├── cli-contract.md        ← CLI surface
+├── documents.md           ← layout + tuning for `docs download`
 ├── events.md              ← eventType vocabulary
 ├── troubleshooting.md     ← 3003 registered, 401, 405, 429, etc.
 └── websocket-topics.md    ← timelineTransactions vs timelineActivityLog gap
@@ -106,6 +109,14 @@ docs/
 
 ## Recently resolved investigations
 
+- **2026-05-28**: Bulk PDF downloads landed (`tr_api.documents` +
+  `tr-api docs download`). Matches pytr's `dl_docs` killer feature on
+  top of our timeline_detail wrapper. Layout: `<out>/<YYYY>/<kind>/`
+  with manifest.json. Both downstreams now expose a "Documents" button.
+  See `docs/documents.md`.
+- **2026-05-28**: `tr_api.timeline_detail` shipped — wraps
+  `timelineDetailV2` and exposes `extract_documents()`. Prerequisite
+  for the documents feature.
 - **2026-05-28**: "fetch_all returns only 330 items / no trades" was
   the 2026 eventType rename — old map matched only ~5% of events. Fixed
   in downstream `EVENT_TYPE_MAP`. See `docs/events.md`.
