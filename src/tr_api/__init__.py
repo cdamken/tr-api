@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from . import (
     account,
+    accounts,
     activity_log,
     auth,
     cookies,
@@ -75,6 +76,7 @@ __all__ = [
     "CompleteResult",
     # Sub-modules
     "account",
+    "accounts",
     "activity_log",
     "auth",
     "cookies",

@@ -111,13 +111,27 @@ def portfolio(client: TrClient) -> dict[str, Any]:
     return asyncio.run(_fetch(client, TOPIC_COMPACT_PORTFOLIO))
 
 
-def compact_portfolio_by_type(client: TrClient) -> dict[str, Any]:
+def compact_portfolio_by_type(
+    client: TrClient,
+    *,
+    sec_acc_no: str | None = None,
+) -> dict[str, Any]:
     """Categorised portfolio view, grouped by asset category.
 
-    Returns ``{"categories": [...], "products": {...}}``. Useful if you
-    want stocks/ETFs/crypto buckets without doing the grouping yourself.
+    Returns ``{"categories": [...]}``. Categories observed in the wild:
+    ``stocksAndETFs``, ``cryptos``, ``bonds``, ``privateMarkets``,
+    ``others``. Each category has a ``positions: [...]`` list.
+
+    The ``sec_acc_no`` parameter targets a specific securities account
+    (the value of ``securitiesAccountNumber`` from
+    :func:`tr_api.accounts.account_pairs`). For users with only one
+    account it can be omitted — TR returns the default account in that
+    case. For multi-account users you must pass the right one explicitly.
     """
-    return asyncio.run(_fetch(client, TOPIC_COMPACT_PORTFOLIO_BY_TYPE))
+    extra: dict[str, Any] = {}
+    if sec_acc_no is not None:
+        extra["secAccNo"] = sec_acc_no
+    return asyncio.run(_fetch(client, TOPIC_COMPACT_PORTFOLIO_BY_TYPE, **extra))
 
 
 def cash(client: TrClient) -> Any:
