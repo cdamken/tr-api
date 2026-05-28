@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import account, auth, cookies, portfolio, profiles, transactions
+from . import account, auth, cookies, portfolio, profiles, timeline_detail, transactions
 from .auth import InvalidCredentials, LoginError, RateLimited
 from .client import TrClient
 from .exceptions import (
@@ -372,6 +372,34 @@ def cmd_transactions(args: argparse.Namespace) -> Any:
     return {"count": len(items), "items": items}
 
 
+# ----- timeline-detail ---------------------------------------------------
+def cmd_timeline_detail(args: argparse.Namespace) -> Any:
+    p = _resolve_profile(args.phone)
+    with TrClient(p) as c:
+        if len(args.event_id) == 1:
+            detail = timeline_detail.fetch(c, args.event_id[0])
+            if args.with_documents:
+                return {
+                    "detail": detail,
+                    "documents": timeline_detail.extract_documents(detail),
+                }
+            return detail
+        # Multiple ids -> batched
+        details = timeline_detail.fetch_many(c, args.event_id)
+        if args.with_documents:
+            return {
+                eid: {
+                    "detail": d,
+                    "documents": (
+                        timeline_detail.extract_documents(d)
+                        if "error" not in d else []
+                    ),
+                }
+                for eid, d in details.items()
+            }
+        return details
+
+
 def _parse_date(s: str) -> datetime:
     """Accept YYYY-MM-DD or full ISO-8601."""
     try:
@@ -504,6 +532,22 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Stop when this ID appears (repeatable)")
     sp.add_argument("--max-pages", type=int, default=transactions.MAX_PAGES_DEFAULT)
     sp.set_defaults(func=cmd_transactions)
+
+    # timeline-detail
+    sp = sub.add_parser(
+        "timeline-detail",
+        help="Fetch the timelineDetailV2 page for one or more event IDs",
+    )
+    sp.add_argument("--phone", default=None)
+    sp.add_argument(
+        "event_id", nargs="+",
+        help="One or more event IDs (from `transactions` or `activity-log`)",
+    )
+    sp.add_argument(
+        "--with-documents", action="store_true",
+        help="Also extract document URLs from the detail payload",
+    )
+    sp.set_defaults(func=cmd_timeline_detail)
 
     return p
 

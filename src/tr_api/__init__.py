@@ -24,6 +24,7 @@ from . import (
     portfolio,
     profiles,
     protocol,
+    timeline_detail,
     transactions,
     waf,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "portfolio",
     "profiles",
     "protocol",
+    "timeline_detail",
     "transactions",
     "waf",
     # Exceptions
