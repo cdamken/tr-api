@@ -156,6 +156,55 @@ WebSocket portfolio fetch. Payload is the merged portfolio snapshot.
 
 Timeline transactions, optionally bounded. Payload is a list.
 
+### `tr-api timeline-detail <event_id> [<event_id> ...] [--with-documents] [--phone=…]`
+
+Fetch the `timelineDetailV2` page for one or more event IDs. With a
+single id, returns the raw detail. With multiple ids, returns a map
+`{event_id: detail}` and any per-id failures appear as
+`{"error": "..."}` rather than failing the whole call.
+
+`--with-documents` additionally extracts and returns the document refs
+(`id`, `title`, `url`) from the detail payload.
+
+### `tr-api docs list [--since=YYYY-MM-DD] [--kinds=trades,dividends,…] [--phone=…]`
+
+Walk both timeline topics on one WebSocket, fetch every
+`timelineDetailV2`, return all document refs without downloading.
+Useful for "what would `docs download` do?" inspection.
+
+Data shape:
+
+```json
+{
+  "count": 487,
+  "by_kind":  {"trades": 312, "dividends": 41, "tax": 6, ...},
+  "by_year":  {"2024": 180, "2025": 220, "2026": 87},
+  "items": [
+    {"event_id": "...", "event_type": "TRADING_TRADE_EXECUTED",
+     "event_date": "2025-03-15T...", "kind": "trades",
+     "title": "Abrechnung", "url": "https://documents.tr.com/..."}
+  ]
+}
+```
+
+### `tr-api docs download --out=DIR [--since=YYYY-MM-DD] [--kinds=...] [--concurrency=N] [--dry-run] [--phone=…]`
+
+Download every PDF into `<out>/<YYYY>/<kind>/<filename>.pdf`. Writes a
+`manifest.json` at the root. Idempotent: re-running skips files already
+on disk.
+
+See [`documents.md`](documents.md) for the full layout description.
+
+Data shape:
+
+```json
+{
+  "out_dir": "/home/user/tr-docs",
+  "counts":  {"downloaded": 487, "skipped_existing": 12, "total": 499},
+  "manifest": "/home/user/tr-docs/manifest.json"
+}
+```
+
 ## Stability guarantees
 
 - Exit codes 0–39 are part of the public contract — they will not be

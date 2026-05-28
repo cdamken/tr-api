@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import account, auth, cookies, portfolio, profiles, timeline_detail, transactions
+from . import account, auth, cookies, documents, portfolio, profiles, timeline_detail, transactions
 from .auth import InvalidCredentials, LoginError, RateLimited
 from .client import TrClient
 from .exceptions import (
@@ -400,6 +400,79 @@ def cmd_timeline_detail(args: argparse.Namespace) -> Any:
         return details
 
 
+# ----- docs -------------------------------------------------------------
+def cmd_docs_list(args: argparse.Namespace) -> Any:
+    p = _resolve_profile(args.phone)
+    since = _parse_date(args.since) if args.since else None
+    kinds = _parse_kinds(args.kinds)
+    with TrClient(p) as c:
+        refs = documents.list_refs(
+            c,
+            since=since,
+            kinds=kinds,
+            concurrency=args.concurrency,
+        )
+    return {
+        "count": len(refs),
+        "by_kind": _count_by(refs, key=lambda r: r.kind),
+        "by_year": _count_by(refs, key=lambda r: r.year),
+        "items": [
+            {
+                "event_id": r.event_id,
+                "event_type": r.event_type,
+                "event_date": r.event_date,
+                "kind": r.kind,
+                "title": r.title,
+                "url": r.url,
+            }
+            for r in refs
+        ],
+    }
+
+
+def cmd_docs_download(args: argparse.Namespace) -> Any:
+    p = _resolve_profile(args.phone)
+    since = _parse_date(args.since) if args.since else None
+    kinds = _parse_kinds(args.kinds)
+    with TrClient(p) as c:
+        report = documents.download_all(
+            c,
+            args.out,
+            since=since,
+            kinds=kinds,
+            concurrency=args.concurrency,
+            dry_run=args.dry_run,
+        )
+    return {
+        "out_dir": report.out_dir,
+        "counts": report.counts,
+        "manifest": (
+            f"{report.out_dir}/manifest.json" if not args.dry_run else None
+        ),
+    }
+
+
+def _parse_kinds(s: str | None) -> list[str] | None:
+    if not s:
+        return None
+    out = [k.strip() for k in s.split(",") if k.strip()]
+    valid = set(documents.KINDS)
+    bad = [k for k in out if k not in valid]
+    if bad:
+        raise SystemExit(
+            f"Unknown --kinds value(s): {bad}. Valid: {sorted(valid)}"
+        )
+    return out
+
+
+def _count_by(items: list[Any], *, key: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for it in items:
+        k = key(it)
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def _parse_date(s: str) -> datetime:
     """Accept YYYY-MM-DD or full ISO-8601."""
     try:
@@ -532,6 +605,39 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Stop when this ID appears (repeatable)")
     sp.add_argument("--max-pages", type=int, default=transactions.MAX_PAGES_DEFAULT)
     sp.set_defaults(func=cmd_transactions)
+
+    # docs (group)
+    dp = sub.add_parser(
+        "docs",
+        help="List or download all PDFs associated with timeline events",
+    )
+    dp_sub = dp.add_subparsers(dest="docs_cmd", required=True)
+
+    sp = dp_sub.add_parser("list", help="List document refs (no download)")
+    sp.add_argument("--phone", default=None)
+    sp.add_argument("--since", default=None,
+                    help="YYYY-MM-DD or ISO-8601 cutoff (exclusive)")
+    sp.add_argument("--kinds", default=None,
+                    help="Comma-separated kinds to include "
+                         "(default: all; valid: "
+                         + ",".join(documents.KINDS) + ")")
+    sp.add_argument("--concurrency", type=int,
+                    default=documents.DEFAULT_CONCURRENCY)
+    sp.set_defaults(func=cmd_docs_list)
+
+    sp = dp_sub.add_parser("download", help="Download every PDF to --out")
+    sp.add_argument("--phone", default=None)
+    sp.add_argument("--out", required=True,
+                    help="Destination directory (will be created if missing)")
+    sp.add_argument("--since", default=None,
+                    help="YYYY-MM-DD or ISO-8601 cutoff (exclusive)")
+    sp.add_argument("--kinds", default=None,
+                    help="Comma-separated kinds (default: all)")
+    sp.add_argument("--concurrency", type=int,
+                    default=documents.DEFAULT_CONCURRENCY)
+    sp.add_argument("--dry-run", action="store_true",
+                    help="Show what would be downloaded without writing files")
+    sp.set_defaults(func=cmd_docs_download)
 
     # timeline-detail
     sp = sub.add_parser(
