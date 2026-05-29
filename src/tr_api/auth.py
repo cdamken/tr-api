@@ -46,6 +46,17 @@ from .profiles import Profile
 
 LOGIN_ENDPOINT = "/api/v1/auth/web/login"
 
+# Keep-alive endpoint. A periodic GET here causes TR to rotate the
+# session cookies (JSESSIONID + tr_session) without a new login. pytr
+# has used this for years at a ~290 s cadence (just under the ~5 min
+# server-side session TTL). Reference:
+# https://github.com/pytr-org/pytr/blob/master/pytr/api.py
+SESSION_ENDPOINT = "/api/v1/auth/web/session"
+
+# How often to refresh proactively. 290s sits just under TR's ~5 min
+# session timeout; if you call right at the edge you risk a race.
+SESSION_REFRESH_INTERVAL_SEC = 290
+
 # Default headers for the login round-trip. We deliberately don't reuse
 # TrClient here — TrClient expects valid cookies to instantiate, and
 # during login we don't have them yet.
@@ -263,6 +274,80 @@ def complete_login(
 
     raise LoginError(
         f"Complete failed: status={r.status_code} body={r.text[:300]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Session keepalive — the pytr-style way to keep cookies fresh
+# ---------------------------------------------------------------------------
+@dataclass
+class RefreshResult:
+    """Outcome of a single refresh_session() call."""
+    ok: bool                           # True if TR returned 200 + rotated cookies
+    status_code: int
+    cookies_changed: list[str]         # names of cookies whose values changed
+    error: str | None = None
+
+
+def refresh_session(profile: Profile) -> RefreshResult:
+    """Refresh the TR session by hitting /api/v1/auth/web/session.
+
+    This is the trick pytr has used for years to keep long-running
+    processes alive: TR rotates the session cookies (JSESSIONID,
+    tr_session) on every successful GET to this endpoint. Call it
+    every ~290s before the server-side session expires (~5 min idle).
+
+    Loads cookies from the profile, GETs the endpoint with a fresh
+    WAF token, persists the rotated cookies back to disk.
+
+    Returns a RefreshResult. If `ok` is False (401 typically), the
+    user must re-login — the refresh token chain itself has expired
+    or been invalidated.
+    """
+    if not profile.cookies_file.is_file():
+        return RefreshResult(
+            ok=False, status_code=0, cookies_changed=[],
+            error=f"No cookies file at {profile.cookies_file}; run `tr-api auth login` first.",
+        )
+
+    sess = requests.Session()
+    sess.cookies = _cookies.load_from_file(profile.cookies_file)
+    before = {c.name: c.value for c in sess.cookies}
+
+    try:
+        waf_token = waf.get_waf_token().value
+    except Exception as e:
+        return RefreshResult(
+            ok=False, status_code=0, cookies_changed=[],
+            error=f"WAF token unavailable: {e}",
+        )
+
+    url = f"{API_BASE}{SESSION_ENDPOINT}"
+    try:
+        r = sess.get(url, headers=_login_headers(waf_token), timeout=15)
+    except requests.RequestException as e:
+        return RefreshResult(
+            ok=False, status_code=0, cookies_changed=[],
+            error=f"network error: {type(e).__name__}: {e}",
+        )
+
+    if r.status_code != 200:
+        return RefreshResult(
+            ok=False,
+            status_code=r.status_code,
+            cookies_changed=[],
+            error=f"refresh rejected: status={r.status_code} body={r.text[:200]}",
+        )
+
+    # TR returned 200 — its Set-Cookie headers have already updated
+    # sess.cookies via requests. Persist back to disk.
+    after = {c.name: c.value for c in sess.cookies if c.domain.endswith("traderepublic.com")}
+    changed = sorted(name for name, val in after.items() if before.get(name) != val)
+    _cookies.save_to_file(after, profile.cookies_file)
+    return RefreshResult(
+        ok=True,
+        status_code=200,
+        cookies_changed=changed,
     )
 
 

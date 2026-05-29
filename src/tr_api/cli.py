@@ -293,6 +293,26 @@ def cmd_auth_login(args: argparse.Namespace) -> Any:
     return result
 
 
+def cmd_auth_refresh(args: argparse.Namespace) -> Any:
+    """Hit /api/v1/auth/web/session to rotate the session cookies.
+
+    Use this every ~290s to keep a long-running process alive without
+    a full re-login. If TR rejects (401), the refresh-token chain is
+    dead and the user must run `tr-api auth login` again.
+    """
+    from .auth import refresh_session, SESSION_REFRESH_INTERVAL_SEC
+    p = _resolve_profile(args.phone)
+    result = refresh_session(p)
+    return {
+        "phone": p.phone,
+        "ok": result.ok,
+        "status_code": result.status_code,
+        "cookies_changed": result.cookies_changed,
+        "error": result.error,
+        "recommended_interval_sec": SESSION_REFRESH_INTERVAL_SEC,
+    }
+
+
 def cmd_auth_status(args: argparse.Namespace) -> Any:
     p = _resolve_profile(args.phone)
     out: dict[str, Any] = {
@@ -559,6 +579,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--jurisdiction", default=None,
                     help="Used only when creating a new profile (default: DE)")
     sp.set_defaults(func=cmd_auth_import)
+
+    sp = ap_sub.add_parser(
+        "refresh",
+        help="Rotate session cookies via /auth/web/session (pytr-style keepalive)",
+    )
+    sp.add_argument("--phone", default=None)
+    sp.set_defaults(func=cmd_auth_refresh)
 
     sp = ap_sub.add_parser("status", help="Show cookie validity (no network)")
     sp.add_argument("--phone", default=None)
