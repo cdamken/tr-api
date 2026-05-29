@@ -243,8 +243,19 @@ async def _collect_refs(
     kinds: set[str] | None,
     concurrency: int,
     max_pages: int,
+    batch_size: int = 100,
 ) -> list[DocumentRef]:
-    """Walk both timeline topics on ONE WS, fetch details, return refs."""
+    """Walk both timeline topics on ONE WS, fetch details, return refs.
+
+    Detail fetches go through `TrWebSocket.batch_fetch()` — ONE coroutine
+    reads frames and demuxes by subscription id. We must NEVER use
+    `asyncio.gather([ws.fetch_one(...)])` because a WebSocket has a
+    single reader; concurrent recv() calls drop almost all answers
+    (this was the cause of the docs-list-returns-1-item bug fixed today).
+
+    `batch_size` caps how many detail subscriptions are open at once.
+    100 works comfortably; very large batches can be rejected by TR.
+    """
     async with TrWebSocket(cookie_jar) as ws:
         # Step 1: collect all events from both topics on this one WS.
         tx_events = await _paginate_topic_on_ws(
@@ -263,41 +274,36 @@ async def _collect_refs(
                 seen.add(eid)
                 uniq.append(e)
 
-        # Step 2: fetch detail for each, in parallel on the same WS.
-        sem = asyncio.Semaphore(concurrency)
+        # Step 2: fetch detail for each in batches. batch_fetch is the
+        # only correct way to do many subs on one WS — see protocol.py.
         refs: list[DocumentRef] = []
-        lock = asyncio.Lock()
-
-        async def _detail_one(ev: dict[str, Any]) -> None:
-            eid = ev.get("id")
-            if not eid:
-                return
-            async with sem:
-                try:
-                    detail = await ws.fetch_one(
-                        {"type": DETAIL_TOPIC, "id": eid}, timeout=DETAIL_TIMEOUT
-                    )
-                except Exception:
-                    return  # silently skip; better than aborting a 5000-event run
-            for d in extract_documents(detail):
-                if not d.get("url"):
+        for i in range(0, len(uniq), batch_size):
+            chunk = uniq[i : i + batch_size]
+            payloads = [{"type": DETAIL_TOPIC, "id": ev["id"]} for ev in chunk]
+            # Generous timeout scaled to batch size; per-detail it's < 1s.
+            details = await ws.batch_fetch(
+                payloads,
+                timeout=max(30.0, len(chunk) * 1.5),
+                ignore_errors=True,
+            )
+            for ev, detail in zip(chunk, details):
+                if detail is None:
                     continue
-                kind = classify(ev.get("eventType"), d.get("title") or "")
-                if kinds is not None and kind not in kinds:
-                    continue
-                ref = DocumentRef(
-                    event_id=eid,
-                    event_type=ev.get("eventType") or "",
-                    event_date=ev.get("timestamp") or ev.get("eventTime") or "",
-                    doc_id=d.get("id"),
-                    title=d.get("title") or "",
-                    url=d["url"],
-                    kind=kind,
-                )
-                async with lock:
-                    refs.append(ref)
-
-        await asyncio.gather(*[_detail_one(ev) for ev in uniq])
+                for d in extract_documents(detail):
+                    if not d.get("url"):
+                        continue
+                    kind = classify(ev.get("eventType"), d.get("title") or "")
+                    if kinds is not None and kind not in kinds:
+                        continue
+                    refs.append(DocumentRef(
+                        event_id=str(ev.get("id") or ""),
+                        event_type=ev.get("eventType") or "",
+                        event_date=ev.get("timestamp") or ev.get("eventTime") or "",
+                        doc_id=d.get("id"),
+                        title=d.get("title") or "",
+                        url=d["url"],
+                        kind=kind,
+                    ))
         return refs
 
 
