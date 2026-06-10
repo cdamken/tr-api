@@ -28,6 +28,7 @@ don't need to install it.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -70,6 +71,9 @@ class WafToken:
 # Module-level cache so multiple operations in one CLI invocation reuse
 # the token (one Playwright launch is ~3s — not free).
 _cached: WafToken | None = None
+# Serializes the cache check + expensive Playwright fetch so two
+# concurrent first calls don't both launch a browser.
+_cache_lock = threading.Lock()
 
 
 def get_waf_token(
@@ -81,20 +85,24 @@ def get_waf_token(
 ) -> WafToken:
     """Return a WAF token. Uses an in-process cache unless force_refresh=True.
 
+    Thread-safe: concurrent first calls serialize on a lock so only one
+    thread pays the ~3 s Playwright launch; the rest reuse its result.
+
     Raises WafTokenError if Playwright isn't installed or the JS challenge
     fails (network down, TR's WAF JS missing, etc.).
     """
     global _cached
-    if (
-        not force_refresh
-        and _cached is not None
-        and not _cached.is_stale(max_age)
-    ):
-        return _cached
+    with _cache_lock:
+        if (
+            not force_refresh
+            and _cached is not None
+            and not _cached.is_stale(max_age)
+        ):
+            return _cached
 
-    token_value = _fetch_via_playwright(headless=headless, timeout_ms=timeout_ms)
-    _cached = WafToken(value=token_value, obtained_at=time.time())
-    return _cached
+        token_value = _fetch_via_playwright(headless=headless, timeout_ms=timeout_ms)
+        _cached = WafToken(value=token_value, obtained_at=time.time())
+        return _cached
 
 
 def _fetch_via_playwright(*, headless: bool, timeout_ms: int) -> str:

@@ -69,6 +69,25 @@ def import_from_chrome(browser: str = "chrome") -> dict[str, str]:
     for url in ("https://app.traderepublic.com/", "https://api.traderepublic.com/"):
         try:
             got = chrome_cookies(url, browser=browser)
+        except UnicodeDecodeError as e:
+            # Decryption produced garbage bytes (e.g. 0xb0 at position 0)
+            # that then fail UTF-8 decoding. On Linux this almost always
+            # means pycookiecheat decrypted Chrome's cookie values with the
+            # WRONG key — Chrome stores the Safe Storage key in the desktop
+            # keyring (gnome-keyring / kwallet); headless or non-GNOME
+            # systems fall back to the hardcoded 'peanuts' password, which
+            # only matches if Chrome ALSO used basic protection.
+            # GitHub issue cdamken/tr-api#3 tracks this on Debian.
+            raise ChromeNotFound(
+                "Chrome cookie decryption produced invalid bytes "
+                f"({e}).\n"
+                "On Linux this usually means the Chrome 'Safe Storage' key in "
+                "your keyring doesn't match what pycookiecheat used. Fixes:\n"
+                "  1. Make sure gnome-keyring / kwallet is running and unlocked\n"
+                "  2. Or launch Chrome once with --password-store=basic, "
+                "re-login to TR, and retry the import\n"
+                "  3. Or use programmatic login instead: tr-api auth login"
+            ) from e
         except Exception as e:
             msg = str(e).lower()
             if "keychain" in msg or "decrypt" in msg or "permission" in msg:

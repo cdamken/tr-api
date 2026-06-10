@@ -133,7 +133,8 @@ class TrWebSocket:
 
     async def subscribe(self, payload: dict[str, Any]) -> str:
         """Send `sub <id> <payload>`. Returns the subscription id."""
-        assert self._ws is not None, "Call connect() first"
+        if self._ws is None:
+            raise RuntimeError("WebSocket not connected; call connect() first")
         sub_id = await self._next_id()
         self._subs[sub_id] = payload
         await self._ws.send(f"sub {sub_id} {json.dumps(payload)}")
@@ -153,7 +154,8 @@ class TrWebSocket:
         The caller is responsible for parsing payload_str as JSON when
         appropriate, and for applying deltas via apply_delta().
         """
-        assert self._ws is not None, "Call connect() first"
+        if self._ws is None:
+            raise RuntimeError("WebSocket not connected; call connect() first")
         raw = await self._ws.recv()
         if not isinstance(raw, str):
             raw = raw.decode("utf-8", errors="replace")
@@ -232,7 +234,8 @@ class TrWebSocket:
         if not payloads:
             return []
 
-        assert self._ws is not None, "Call connect() first"
+        if self._ws is None:
+            raise RuntimeError("WebSocket not connected; call connect() first")
 
         # Fire all subscribes (sequential send, but doesn't await answers)
         sub_ids: list[str] = []
