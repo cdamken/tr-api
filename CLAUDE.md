@@ -29,6 +29,26 @@ The library supports both, side-by-side:
 
 The README and `docs/auth-modes.md` cover the trade-offs.
 
+## Session model + data availability (confirmed 2026-06-16)
+
+**Sesión:** cookies (`JSESSIONID`, `tr_refresh`, `tr_device`). Login
+programático = teléfono + PIN → push de **4 dígitos** (`processId` ~60s,
+`.pending_login.json` TTL 5 min). **Keepalive GET cada 290s** porque la sesión
+del server de TR dura ~5 min; las cookies mueren tras días o por login
+concurrente (WS cierra con `3003 registered`).
+
+> **CONTRASTE con GBM**: TR **no** sufre el burn-down del access token de GBM.
+> NO apliques aquí el fix de refresh-Bearer proactivo de gbm-mx-api — el modelo
+> de TR es keepalive de cookie, distinto del de GBM (refresh-Bearer) y del de SC
+> (Auth0 + re-auth on-demand).
+
+**Disponibilidad de datos:** TR tiene **UNA sola cuenta** en 5 buckets
+(Stocks/ETFs, Bonds, Private Equity, Crypto, Cash). **No** existe una sub-cuenta
+"solo posiciones" análoga a la Trading USA de GBM — todo el timeline se captura
+por igual. Por eso la nota de UI "solo posiciones" es **exclusiva de GBM** y TR
+no la lleva. Detalle: ADR `2026-06-16 — TR` en
+[../Portfolio-Master/DECISIONS.md](../Portfolio-Master/DECISIONS.md).
+
 ## Two WS timeline topics (the gotcha)
 
 TR splits the timeline across **two parallel topics**:
