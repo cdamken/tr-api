@@ -204,15 +204,33 @@ async def _snapshot_full_async(
     should treat name/price as optional.
     """
     async with TrWebSocket(client.session.cookies) as ws:
-        # Step 1: portfolio + cash together
+        # Step 1: flat portfolio + categorised portfolio + cash together.
+        # TR (v3x) increasingly returns the flat `compactPortfolio` with an
+        # EMPTY positions list and only populates the categorised
+        # `compactPortfolioByType` (the buckets the mobile "Wealth" screen
+        # shows: stocksAndETFs / cryptos / bonds / privateMarkets / others).
+        # When the flat list is empty we flatten the categories instead.
         first = await ws.batch_fetch(
-            [{"type": TOPIC_COMPACT_PORTFOLIO}, {"type": TOPIC_CASH}],
+            [
+                {"type": TOPIC_COMPACT_PORTFOLIO},
+                {"type": TOPIC_COMPACT_PORTFOLIO_BY_TYPE},
+                {"type": TOPIC_CASH},
+            ],
             timeout=15,
         )
         compact = first[0] or {}
-        cash = first[1]
+        by_type = first[1] or {}
+        cash = first[2]
 
         positions = list(compact.get("positions") or [])
+        if not positions:
+            for cat in (by_type.get("categories") or []):
+                for pos in (cat.get("positions") or []):
+                    p = dict(pos)
+                    # Enrichment below keys on instrumentId; byType positions
+                    # carry the ISIN under `isin` (or instrumentId).
+                    p.setdefault("instrumentId", pos.get("instrumentId") or pos.get("isin"))
+                    positions.append(p)
         if not positions:
             return {"portfolio": {"positions": []}, "cash": cash}
 
