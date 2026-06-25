@@ -213,6 +213,7 @@ class TrWebSocket:
         payloads: list[dict[str, Any]],
         *,
         timeout: float = 60.0,
+        idle_timeout: float = 8.0,
         ignore_errors: bool = True,
     ) -> list[Any]:
         """Subscribe to many topics on one WS, collect the first Answer for each.
@@ -248,7 +249,16 @@ class TrWebSocket:
 
         async def _drain() -> None:
             while wanted:
-                rid, code, body = await self.recv()
+                try:
+                    rid, code, body = await asyncio.wait_for(self.recv(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    # No frame for idle_timeout seconds → the still-`wanted`
+                    # subscriptions are never going to answer: illiquid names,
+                    # rights/warrants with no live quote, post-corporate-action
+                    # ISINs (e.g. "DUPONT DE NEMO. NEW", "VISCOFAN -ANR-"). Stop
+                    # waiting and return what arrived — one never-ticking
+                    # position must not poison the entire portfolio snapshot.
+                    return
                 if rid not in wanted:
                     continue
                 if code == "A":
@@ -273,6 +283,10 @@ class TrWebSocket:
 
         try:
             await asyncio.wait_for(_drain(), timeout=timeout)
+        except asyncio.TimeoutError:
+            # Hard ceiling hit (rare now that _drain also idle-times-out).
+            # Return the partial results rather than failing the whole fetch.
+            pass
         finally:
             # Unsubscribe everything to keep TR happy. Errors here don't matter.
             for sid in sub_ids:
