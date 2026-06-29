@@ -138,6 +138,8 @@ class DocumentRef:
     title: str
     url: str
     kind: str                # one of KINDS
+    isin: str = ""           # security ISIN, if the event is about one
+    name: str = ""           # security/instrument name, if any
 
     @property
     def year(self) -> str:
@@ -301,6 +303,13 @@ async def _collect_refs(
             for ev, detail in zip(chunk, details):
                 if detail is None:
                     continue
+                # Security identity for the filename — pure metadata, no PDF
+                # parsing. ISIN lives in the event icon (e.g. logos/<ISIN>/v2)
+                # and/or the detail's instrument table; the name is the event
+                # title. Only tag a name when we actually found an ISIN, so
+                # account-level docs (statements, tax, "other") stay clean.
+                isin = extract_isin(ev.get("icon"), detail)
+                asset_name = str(ev.get("title") or "") if isin else ""
                 for d in extract_documents(detail):
                     if not d.get("url"):
                         continue
@@ -315,6 +324,8 @@ async def _collect_refs(
                         title=d.get("title") or "",
                         url=d["url"],
                         kind=kind,
+                        isin=isin,
+                        name=asset_name,
                     ))
         return refs
 
@@ -333,15 +344,47 @@ def _slug(s: str, max_len: int = 40) -> str:
     return (n[:max_len] or "doc").lower()
 
 
+# ISIN = 2 country letters + 9 alphanumerics + 1 check digit (e.g. US0378331005).
+_ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b")
+
+
+def extract_isin(*sources: Any) -> str:
+    """First ISIN found in any of the given strings/objects, or ''.
+
+    TR puts the ISIN in the event ``icon`` (e.g. ``logos/US0378331005/v2``)
+    and in the detail's instrument table; scanning either is enough. Pure
+    metadata — no PDF parsing needed.
+    """
+    for s in sources:
+        if not s:
+            continue
+        m = _ISIN_RE.search(s if isinstance(s, str) else json.dumps(s, default=str))
+        if m:
+            return m.group(1)
+    return ""
+
+
 def filename_for(ref: DocumentRef) -> str:
     """Build the on-disk filename for a DocumentRef.
 
-    Pattern: YYYY-MM-DD_<kind>_<slug-title>_<short-id>.pdf
+    Pattern: YYYY-MM-DD_<ISIN>_<name>_<description>_<short-id>.pdf
+
+    ISIN + name are included when the event is about a security (trades,
+    dividends, savings plans, corporate actions) so files are searchable by
+    ticker/company; they're omitted for account-level docs (statements, tax,
+    "other") that aren't tied to one instrument.
     """
     date = (ref.event_date or "")[:10] or "unknown"
     short_id = (ref.event_id or "x")[:8]
-    title = _slug(ref.title or ref.kind)
-    return f"{date}_{ref.kind}_{title}_{short_id}.pdf"
+    desc = _slug(ref.title or ref.kind)
+    parts = [date]
+    if ref.isin:
+        parts.append(ref.isin)
+    if ref.name:
+        parts.append(_slug(ref.name))
+    parts.append(desc)
+    parts.append(short_id)
+    return "_".join(parts) + ".pdf"
 
 
 def path_for(ref: DocumentRef, out_dir: Path) -> Path:
