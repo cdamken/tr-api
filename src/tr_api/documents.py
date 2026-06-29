@@ -144,6 +144,18 @@ class DocumentRef:
         ts = self.event_date or ""
         return ts[:4] if len(ts) >= 4 and ts[:4].isdigit() else "unknown"
 
+    @property
+    def month(self) -> str:
+        """Zero-padded month (MM) from the event date, or '00' if unknown.
+
+        Used to bucket the on-disk tree by month so no single directory
+        holds thousands of PDFs (which made the ownCloud sync client's
+        WebDAV directory listing time out).
+        """
+        ts = self.event_date or ""
+        mm = ts[5:7] if len(ts) >= 7 else ""
+        return mm if mm.isdigit() else "00"
+
 
 @dataclass
 class DownloadResult:
@@ -333,8 +345,16 @@ def filename_for(ref: DocumentRef) -> str:
 
 
 def path_for(ref: DocumentRef, out_dir: Path) -> Path:
-    """Full path: <out_dir>/<YYYY>/<kind>/<filename>.pdf"""
-    return out_dir / ref.year / ref.kind / filename_for(ref)
+    """Full path: <out_dir>/<YYYY>/<kind>/<MM>/<filename>.pdf
+
+    Bucketed by month. The old flat <year>/<kind> tree put 3,000+ PDFs in a
+    single directory (e.g. 2025/savings-plans), which made the ownCloud sync
+    client's WebDAV directory listing (PROPFIND) time out — the folder became
+    unsyncable even though every file was present. A month level keeps each
+    directory small (tens-to-hundreds) so listings stay fast. No files are
+    dropped — only organised one level deeper.
+    """
+    return out_dir / ref.year / ref.kind / ref.month / filename_for(ref)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +458,7 @@ def download_all(
     Idempotent: re-running skips files already on disk. Failures are
     recorded per-file in the report (no exception raised for one bad URL).
 
-    Layout:  <out_dir>/<YYYY>/<kind>/<filename>.pdf
+    Layout:  <out_dir>/<YYYY>/<kind>/<MM>/<filename>.pdf
 
     Writes <out_dir>/manifest.json unless write_manifest=False.
     """
