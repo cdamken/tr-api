@@ -42,13 +42,15 @@ dedupe; collision-free in practice for accounts with <10M events).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .client import TrClient
 from .protocol import TrWebSocket
@@ -375,7 +377,15 @@ def filename_for(ref: DocumentRef) -> str:
     "other") that aren't tied to one instrument.
     """
     date = (ref.event_date or "")[:10] or "unknown"
-    short_id = (ref.event_id or "x")[:8]
+    # Código: unique PER DOCUMENT, not per event. A single timeline event can
+    # carry several PDFs (e.g. a dividend event with a receipt + a tax cert);
+    # they share the same event_id, so keying the suffix on event_id made them
+    # collide on one filename → two coroutines wrote the same `.part` → rename
+    # race → FileNotFoundError. Hash doc_id (the document's own id) so every
+    # PDF gets a distinct, stable código.
+    short_id = hashlib.md5(
+        (ref.doc_id or ref.event_id or ref.url or "x").encode("utf-8")
+    ).hexdigest()[:8]
     desc = _slug(ref.title or ref.kind)
     parts = [date]
     if ref.isin:
@@ -406,7 +416,11 @@ def path_for(ref: DocumentRef, out_dir: Path) -> Path:
 def _download_one_sync(session: Any, url: str, dest: Path, timeout: float) -> int:
     """Stream a single URL to dest using a `requests.Session`. Returns bytes written."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    # Unique temp name (include the URL hash) so two concurrent writers that
+    # ever target the same dest can't clobber each other's `.part` and trigger
+    # a rename race. The final atomic rename still lands on `dest`.
+    salt = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+    tmp = dest.with_suffix(dest.suffix + f".{salt}.part")
     total = 0
     with session.get(url, stream=True, timeout=timeout) as r:
         r.raise_for_status()
@@ -495,6 +509,8 @@ def download_all(
     max_pages: int = MAX_PAGES_DEFAULT,
     dry_run: bool = False,
     write_manifest: bool = True,
+    keepalive: Callable[[], Any] | None = None,
+    keepalive_interval: float = 290.0,
 ) -> DownloadReport:
     """Walk the timeline and download every PDF into a year/kind tree.
 
@@ -504,28 +520,57 @@ def download_all(
     Layout:  <out_dir>/<YYYY>/<kind>/<MM>/<filename>.pdf
 
     Writes <out_dir>/manifest.json unless write_manifest=False.
+
+    `keepalive`, if given, is called every `keepalive_interval` seconds on a
+    background daemon thread for the whole run. A full-history walk (thousands
+    of timelineDetailV2 calls) plus the PDF download phase can take well over
+    TR's ~5 min server-side session window; the keepalive (pytr-style GET
+    /auth/web/session) rotates the session cookies so the run doesn't die
+    mid-way and bounce the user back to a fresh MFA push. Exceptions raised by
+    the callback are swallowed — a failed refresh must not abort the download.
     """
     out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     started = datetime.now(timezone.utc).isoformat()
 
-    refs = list_refs(
-        client,
-        since=since,
-        kinds=kinds,
-        concurrency=concurrency,
-        max_pages=max_pages,
-    )
+    stop_keepalive = threading.Event()
+    ka_thread: threading.Thread | None = None
+    if keepalive is not None and not dry_run:
+        def _keepalive_loop() -> None:
+            # wait() returns True when the event is set (run finished) → exit.
+            while not stop_keepalive.wait(keepalive_interval):
+                try:
+                    keepalive()
+                except Exception:
+                    pass
 
-    results = asyncio.run(
-        _download_all(
-            client.session,
-            refs,
-            out,
-            concurrency=concurrency,
-            dry_run=dry_run,
+        ka_thread = threading.Thread(
+            target=_keepalive_loop, name="tr-docs-keepalive", daemon=True
         )
-    )
+        ka_thread.start()
+
+    try:
+        refs = list_refs(
+            client,
+            since=since,
+            kinds=kinds,
+            concurrency=concurrency,
+            max_pages=max_pages,
+        )
+
+        results = asyncio.run(
+            _download_all(
+                client.session,
+                refs,
+                out,
+                concurrency=concurrency,
+                dry_run=dry_run,
+            )
+        )
+    finally:
+        stop_keepalive.set()
+        if ka_thread is not None:
+            ka_thread.join(timeout=2.0)
 
     finished = datetime.now(timezone.utc).isoformat()
     counts: dict[str, int] = {}

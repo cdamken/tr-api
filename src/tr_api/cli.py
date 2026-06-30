@@ -455,6 +455,15 @@ def cmd_docs_download(args: argparse.Namespace) -> Any:
     since = _parse_date(args.since) if args.since else None
     kinds = _parse_kinds(args.kinds)
     with TrClient(p) as c:
+        # Keep the session warm for the whole run. A full-history download can
+        # outlast TR's ~5 min session window; refresh rotates the cookies
+        # (pytr-style GET /auth/web/session), then we reload them into the live
+        # client session so the in-flight walk/downloads keep authenticating.
+        def _keepalive() -> None:
+            res = auth.refresh_session(p)
+            if res.ok:
+                c.session.cookies = cookies.load_from_file(p.cookies_file)
+
         report = documents.download_all(
             c,
             args.out,
@@ -462,6 +471,7 @@ def cmd_docs_download(args: argparse.Namespace) -> Any:
             kinds=kinds,
             concurrency=args.concurrency,
             dry_run=args.dry_run,
+            keepalive=_keepalive,
         )
     return {
         "out_dir": report.out_dir,
