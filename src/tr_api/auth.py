@@ -31,9 +31,14 @@ Failure modes worth knowing about:
 """
 from __future__ import annotations
 
+import base64
 import json
+import os
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 import requests
@@ -45,6 +50,19 @@ from .exceptions import ApiError, TrApiError
 from .profiles import Profile
 
 LOGIN_ENDPOINT = "/api/v1/auth/web/login"
+
+# v2 web-login (2026 redesign). TR deprecated the v1 login: phone+PIN now
+# triggers a PUSH-APPROVAL in the mobile app (like Scalable Capital) — no
+# 4-digit code. See docs + pytr PR #355. The v1 helpers above stay as a
+# fallback. Values captured from app.traderepublic.com; overridable via env
+# in case TR bumps them.
+LOGIN_ENDPOINT_V2 = "/api/v2/auth/web/login"
+TR_WEB_APP_VERSION = os.environ.get("TR_WEB_APP_VERSION", "15.7.0")
+TR_WEB_USER_AGENT_V2 = os.environ.get(
+    "TR_WEB_USER_AGENT",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+)
 
 # Keep-alive endpoint. A periodic GET here causes TR to rotate the
 # session cookies (JSESSIONID + tr_session) without a new login. pytr
@@ -274,6 +292,205 @@ def complete_login(
 
     raise LoginError(
         f"Complete failed: status={r.status_code} body={r.text[:300]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# v2 web login — push-to-approve (no 4-digit code), the 2026 flow
+# ---------------------------------------------------------------------------
+class LoginApprovalPending(LoginError):
+    """The v2 push was created but the user hasn't approved yet (poll again)."""
+
+
+class LoginApprovalTimeout(LoginError):
+    """The v2 approval process expired before the user approved it."""
+
+
+def device_id_for(profile: Profile) -> str:
+    """Return a stable 64-hex device id for this profile, creating it once.
+
+    The v2 web app sends a `stableDeviceId` in x-tr-device-info; TR ties the
+    login process to it. We persist one per profile next to its cookies so
+    re-logins reuse the same identity.
+    """
+    path = Path(profile.cookies_file).parent / "device_id"
+    try:
+        did = path.read_text().strip()
+        if did:
+            return did
+    except OSError:
+        pass
+    did = uuid.uuid4().hex + uuid.uuid4().hex  # 64 hex chars, like the web app
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(did)
+    except OSError:
+        pass
+    return did
+
+
+def _device_info_header(device_id: str) -> str:
+    payload = {
+        "stableDeviceId": device_id,
+        "model": "Apple Macintosh",
+        "browser": "Chrome",
+        "browserVersion": "148.0.0.0",
+        "os": "Mac OS",
+        "osVersion": "10.15.7",
+        "timezone": "Europe/Berlin",
+        "timezoneOffset": -120,
+        "screen": "1800x1169x30",
+        "preferredLanguages": ["en", "en-US"],
+        "numberOfCores": 12,
+        "deviceMemory": 16,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _login_headers_v2(waf_token: str, device_id: str) -> dict[str, str]:
+    return {
+        "User-Agent": TR_WEB_USER_AGENT_V2,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": APP_ORIGIN,
+        "Referer": APP_ORIGIN + "/",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "x-tr-platform": "web",
+        "x-tr-app-version": TR_WEB_APP_VERSION,
+        "x-tr-device-info": _device_info_header(device_id),
+        "x-aws-waf-token": waf_token,
+    }
+
+
+def initiate_login_v2(
+    phone: str,
+    pin: str,
+    device_id: str,
+    *,
+    session: requests.Session,
+) -> InitiateResult:
+    """POST /api/v2/auth/web/login → processId (push sent to the mobile app).
+
+    The v2 flow needs the WAF token BOTH as the `aws-waf-token` cookie and the
+    `x-aws-waf-token` header. Uses the given session so its cookies persist
+    into the approval poll.
+    """
+    token = waf.get_waf_token().value
+    session.cookies.set("aws-waf-token", token, domain=".traderepublic.com")
+    headers = _login_headers_v2(token, device_id)
+    r = session.post(
+        API_BASE + LOGIN_ENDPOINT_V2,
+        json={"phoneNumber": phone, "pin": pin},
+        headers=headers, timeout=25,
+    )
+    if r.status_code == 405 and not r.text:
+        token = waf.get_waf_token(force_refresh=True).value
+        session.cookies.set("aws-waf-token", token, domain=".traderepublic.com")
+        headers = _login_headers_v2(token, device_id)
+        r = session.post(
+            API_BASE + LOGIN_ENDPOINT_V2,
+            json={"phoneNumber": phone, "pin": pin},
+            headers=headers, timeout=25,
+        )
+
+    if r.status_code == 200:
+        try:
+            j = r.json()
+        except ValueError as e:
+            raise LoginError(f"v2 initiate 200 but body wasn't JSON: {r.text[:200]}") from e
+        pid = j.get("processId")
+        if not pid:
+            raise LoginError(f"v2 initiate 200 but no processId: {j}")
+        return InitiateResult(
+            process_id=pid,
+            countdown_seconds=int(j.get("countdownInSeconds") or 0),
+            two_factor_method="APP_APPROVAL",
+            raw=j,
+        )
+
+    # Reuse the v1 error mapping (429 / bad creds / etc.).
+    return _parse_initiate_response(r)
+
+
+def poll_login_approval(
+    process_id: str,
+    device_id: str,
+    *,
+    session: requests.Session,
+    timeout: float = 120.0,
+    interval: float = 2.0,
+) -> CompleteResult:
+    """Poll GET /api/v2/auth/web/login/processes/{id} until the user approves.
+
+    Returns the harvested session cookies on approval. Raises
+    LoginApprovalTimeout if the process expires or the user never approves.
+    """
+    token = waf.get_waf_token().value
+    headers = _login_headers_v2(token, device_id)
+    url = f"{API_BASE}{LOGIN_ENDPOINT_V2}/processes/{process_id}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = session.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            try:
+                j = r.json()
+            except ValueError:
+                j = {}
+            state = str(j.get("state") or j.get("status") or "").upper()
+            if state in ("APPROVED", "COMPLETED", "SUCCESS", "OK", "DONE"):
+                cookies = {c.name: c.value for c in session.cookies
+                           if c.domain.endswith("traderepublic.com")}
+                return CompleteResult(cookies=cookies, raw_body=r.text)
+            if state in ("REJECTED", "DECLINED", "FAILED", "EXPIRED"):
+                raise LoginError(f"Login process {state.lower()}: {j}")
+            # Some flows set the session cookie without an explicit state.
+            if any(c.name in ("tr_session",) and c.value for c in session.cookies):
+                cookies = {c.name: c.value for c in session.cookies
+                           if c.domain.endswith("traderepublic.com")}
+                return CompleteResult(cookies=cookies, raw_body=r.text)
+        elif r.status_code in (401, 403, 404, 410):
+            raise LoginApprovalTimeout(
+                f"Login process gone/expired ({r.status_code}). "
+                "Approve the push faster, or start the login again."
+            )
+        time.sleep(interval)
+    raise LoginApprovalTimeout(
+        "Trade Republic approval not received in time. Open the TR app and "
+        "approve the login prompt, then try again."
+    )
+
+
+def web_login_v2(
+    profile: Profile,
+    pin: str,
+    *,
+    timeout: float = 120.0,
+    interval: float = 2.0,
+    on_pending: Callable[[InitiateResult], None] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> CompleteResult:
+    """Full v2 push-approval login: initiate → wait for in-app approval → cookies.
+
+    `on_pending(init)` fires right after the push is sent (so callers can tell
+    the user to approve in the app). Blocks until approved or `timeout`.
+    Persists nothing itself — the caller saves the returned cookies.
+    """
+    device_id = device_id_for(profile)
+    session = requests.Session()
+    if log:
+        log("v2 login: sending push approval…")
+    init = initiate_login_v2(profile.phone, pin, device_id, session=session)
+    if log:
+        log(f"v2 login: processId={init.process_id[:8]}… — awaiting approval")
+    if on_pending:
+        on_pending(init)
+    return poll_login_approval(
+        init.process_id, device_id, session=session,
+        timeout=timeout, interval=interval,
     )
 
 

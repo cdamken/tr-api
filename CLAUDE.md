@@ -31,11 +31,18 @@ The README and `docs/auth-modes.md` cover the trade-offs.
 
 ## Session model + data availability (confirmed 2026-06-16)
 
-**Sesión:** cookies (`JSESSIONID`, `tr_refresh`, `tr_device`). Login
-programático = teléfono + PIN → push de **4 dígitos** (`processId` ~60s,
-`.pending_login.json` TTL 5 min). **Keepalive GET cada 290s** porque la sesión
-del server de TR dura ~5 min; las cookies mueren tras días o por login
-concurrente (WS cierra con `3003 registered`).
+**Sesión:** cookies (`JSESSIONID`, `tr_refresh`, `tr_device`). **Keepalive GET
+cada 290s** porque la sesión del server de TR dura ~5 min; las cookies mueren
+tras días o por login concurrente (WS cierra con `3003 registered`).
+
+**Login (2026 redesign — v2 push-approval):** TR **deprecó `/api/v1/auth/web/login`**
+(426 CLIENT_VERSION_OUTDATED). El login web ahora es **`/api/v2/auth/web/login`**
+con **aprobación por push** — ya NO hay código de 4 dígitos; el usuario **aprueba
+en la app** (como SC). Flujo: POST v2 (headers `x-tr-platform`/`x-tr-app-version`/
+`x-tr-device-info`/`x-aws-waf-token` + cookie `aws-waf-token`) → `processId` →
+poll `GET /api/v2/auth/web/login/processes/{id}` hasta `APPROVED` (ventana ~90s).
+Implementado en `auth.web_login_v2()`; v1 (`initiate_login`/`complete_login`) queda
+de respaldo. Ref: pytr PR #355. Verificado live 2026-07-03.
 
 > **CONTRASTE con GBM**: TR **no** sufre el burn-down del access token de GBM.
 > NO apliques aquí el fix de refresh-Bearer proactivo de gbm-mx-api — el modelo
