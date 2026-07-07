@@ -213,7 +213,7 @@ class TrWebSocket:
         payloads: list[dict[str, Any]],
         *,
         timeout: float = 60.0,
-        idle_timeout: float = 8.0,
+        idle_timeout: float = 20.0,
         ignore_errors: bool = True,
     ) -> list[Any]:
         """Subscribe to many topics on one WS, collect the first Answer for each.
