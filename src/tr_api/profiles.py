@@ -71,7 +71,9 @@ def _validate_phone(phone: str) -> str:
 
 
 def _ensure_dirs() -> None:
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    # 0700: this tree holds session cookies — keep names unlistable to others.
+    BASE_DIR.mkdir(mode=0o700, exist_ok=True)
+    PROFILES_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +93,7 @@ def create(phone: str, jurisdiction: str = "DE", name: str | None = None) -> Pro
         name=name,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
-    prof.dir.mkdir(parents=True, exist_ok=True)
+    prof.dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     prof.meta_file.write_text(
         json.dumps(asdict(prof), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

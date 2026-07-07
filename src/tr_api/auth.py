@@ -94,6 +94,26 @@ def _login_headers(waf_token: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Redaction
+# ---------------------------------------------------------------------------
+def _redact_body(text: str | None, limit: int = 120) -> str:
+    """Return a short, safe snippet of an upstream response body for error
+    messages.
+
+    Raw upstream bodies can carry auth-flow detail and, if the exception is
+    logged, leak it. We collapse whitespace and truncate hard so we never
+    attach a full raw body to a user-facing exception, while keeping enough
+    (status code is added by the caller) to debug.
+    """
+    if not text:
+        return "<empty>"
+    snippet = " ".join(text.split())
+    if len(snippet) > limit:
+        snippet = snippet[:limit] + "…"
+    return snippet
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 class LoginError(TrApiError):
@@ -176,7 +196,7 @@ def _parse_initiate_response(r: requests.Response) -> InitiateResult:
         try:
             j = r.json()
         except ValueError as e:
-            raise LoginError(f"Initiate succeeded but body wasn't JSON: {r.text[:200]}") from e
+            raise LoginError(f"Initiate succeeded but body wasn't JSON: {_redact_body(r.text)}") from e
         pid = j.get("processId")
         if not pid:
             raise LoginError(f"Initiate returned 200 but no processId: {j}")
@@ -230,7 +250,7 @@ def _parse_initiate_response(r: requests.Response) -> InitiateResult:
         )
 
     raise LoginError(
-        f"Initiate failed: status={r.status_code} body={r.text[:300]}"
+        f"Initiate failed: status={r.status_code} body={_redact_body(r.text)}"
     )
 
 
@@ -291,7 +311,7 @@ def complete_login(
         )
 
     raise LoginError(
-        f"Complete failed: status={r.status_code} body={r.text[:300]}"
+        f"Complete failed: status={r.status_code} body={_redact_body(r.text)}"
     )
 
 
@@ -401,7 +421,7 @@ def initiate_login_v2(
         try:
             j = r.json()
         except ValueError as e:
-            raise LoginError(f"v2 initiate 200 but body wasn't JSON: {r.text[:200]}") from e
+            raise LoginError(f"v2 initiate 200 but body wasn't JSON: {_redact_body(r.text)}") from e
         pid = j.get("processId")
         if not pid:
             raise LoginError(f"v2 initiate 200 but no processId: {j}")
@@ -553,7 +573,7 @@ def refresh_session(profile: Profile) -> RefreshResult:
             ok=False,
             status_code=r.status_code,
             cookies_changed=[],
-            error=f"refresh rejected: status={r.status_code} body={r.text[:200]}",
+            error=f"refresh rejected: status={r.status_code} body={_redact_body(r.text)}",
         )
 
     # TR returned 200 — its Set-Cookie headers have already updated
