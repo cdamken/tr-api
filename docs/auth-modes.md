@@ -8,7 +8,7 @@ same file on disk:
 | | Cookie-import | Programmatic login |
 |---|---|---|
 | When | Workstation with Chrome | Headless server, CI, container |
-| User interaction | Log in to TR in Chrome | Enter 4-digit code TR pushes to mobile app |
+| User interaction | Log in to TR in Chrome | Approve the login push in the TR mobile app (v2 — no code) |
 | Playwright needed? | **No** — only `pycookiecheat` | **Yes** — to fetch one WAF token |
 | Renewal | Re-log-in in Chrome, re-import | `tr-api login` again |
 | Risk profile | Lowest — TR sees a real Chrome session | Higher — TR sees a Playwright-launched Chromium, but only for the WAF JS challenge, not the actual login |
@@ -83,32 +83,37 @@ authenticated TR access.
 The login flow mirrors what TR's own web frontend does internally,
 adapted to be driven from Python:
 
+> **2026 update — TR moved web login to v2 push-approval.** TR deprecated
+> `/api/v1/auth/web/login` (returns `426 CLIENT_VERSION_OUTDATED`). The current
+> flow is **`/api/v2/auth/web/login`**: there is **no 4-digit code** — the user
+> approves the login from a prompt in the TR mobile app, and the library polls
+> until approved. Use `auth.web_login_v2()` (below). The v1 helpers
+> (`initiate_login`/`complete_login`) are kept as a fallback only.
+
 ```
 1. waf.get_waf_token()
      └─ Playwright launches Chromium, opens app.traderepublic.com,
         waits for AwsWafIntegration.getToken() to resolve, returns
         the token string. Cached ~4h.
 
-2. auth.initiate_login(phone, pin)
-     POST /api/v1/auth/web/login
-     Headers: X-aws-waf-token, real-Chrome User-Agent, Sec-Fetch-*, ...
+2. auth.web_login_v2(profile, pin)
+     POST /api/v2/auth/web/login
+     Headers: x-tr-platform, x-tr-app-version, x-tr-device-info,
+              x-aws-waf-token (+ aws-waf-token cookie)
      Body:    {"phoneNumber": phone, "pin": pin}
-     Returns: InitiateResult(process_id, countdown_seconds, two_factor_method)
-     → TR pushes a 4-digit code to the user's TR mobile app (or SMS).
+     → processId; TR pushes an APPROVAL prompt to the mobile app.
 
-3. <prompt user for the 4-digit code>
+3. Poll GET /api/v2/auth/web/login/processes/{processId} until state=APPROVED
+   (window ~90s). No code is ever typed.
 
-4. auth.complete_login(process_id, code)
-     POST /api/v1/auth/web/login/{process_id}/{code}
-     Returns: CompleteResult(cookies={...})
-     → Harvest cookies, save them to the profile.
+4. → Harvest cookies, save them to the profile.
 ```
 
 ### CLI
 
 ```bash
-tr-api login --phone +491701234567 --pin 1234
-# (interactive prompt for the 4-digit code)
+tr-api login --v2 --phone +491701234567 --pin 1234
+# → approve the login in your Trade Republic mobile app (no code)
 ```
 
 ### Programmatic
@@ -116,16 +121,11 @@ tr-api login --phone +491701234567 --pin 1234
 ```python
 from tr_api import auth, profiles, cookies
 
-# Step 1+2: ask TR to push a code
-init = auth.initiate_login("+491701234567", "1234")
-print(f"Code valid for {init.countdown_seconds}s. Via: {init.two_factor_method}")
-
-# Step 3: collect from your own UI / stdin / web modal
-code = input("4-digit code: ").strip()
-
-# Step 4: complete and save
-result = auth.complete_login(init.process_id, code)
 prof = profiles.create("+491701234567")
+
+# Blocks (polling) until the user approves the push in the TR app, or ~90s.
+result = auth.web_login_v2(prof, "1234")
+profiles.set_active(prof.phone)
 cookies.save_to_file(result.cookies, prof.cookies_file)
 profiles.set_active(prof.phone)
 ```

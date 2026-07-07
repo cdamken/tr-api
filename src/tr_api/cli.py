@@ -261,7 +261,20 @@ def cmd_auth_login(args: argparse.Namespace) -> Any:
     if not pin:
         raise SystemExit("PIN cannot be empty.")
 
-    # 3-6. The flow.
+    # v2 push-approval flow: no code, approve in the TR mobile app.
+    if getattr(args, "v2", False):
+        if not args.json_mode:
+            sys.stderr.write(
+                "\n📱 Approve the login in your Trade Republic mobile app "
+                "(waiting up to 90s)…\n"
+            )
+        result_v2 = auth.web_login_v2(p, pin, timeout=90.0)
+        cookies.save_to_file(result_v2.cookies, p.cookies_file)
+        if profiles.get_active_phone() is None:
+            profiles.set_active(p.phone)
+        return {"phone": p.phone, "cookies_saved": True, "mode": "v2"}
+
+    # 3-6. The v1 flow (legacy; TR now returns 426).
     def code_provider(init: auth.InitiateResult) -> str:
         # Print the "code sent" announcement to stderr so JSON mode keeps
         # stdout clean — but skip it entirely in --json mode (the dashboard
@@ -573,8 +586,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pin", default=None,
                     help="PIN (omit to be prompted; also reads TR_API_PIN env var).")
     sp.add_argument("--code", default=None,
-                    help="4-digit code from the TR mobile-app push "
+                    help="[v1 only] 4-digit code from the TR mobile-app push "
                          "(omit to be prompted; also reads TR_API_CODE env var).")
+    sp.add_argument("--v2", action="store_true",
+                    help="Use TR's current v2 push-approval login: no 4-digit code — "
+                         "approve the login in the TR mobile app. v1 (default) is "
+                         "deprecated (TR returns 426).")
     sp.add_argument("--name", default=None,
                     help="Display name (only used if creating a new profile).")
     sp.add_argument("--jurisdiction", default=None,

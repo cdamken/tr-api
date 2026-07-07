@@ -12,8 +12,12 @@ went down two paths:
    day-to-day API calls.
 2. **Programmatic login mode** — for headless servers (CI, ownCloud,
    anything without a desktop Chrome). Uses Playwright **only** to fetch
-   one WAF token, then handles the 4-digit MFA push challenge against
-   `/api/v1/auth/web/login` directly.
+   one WAF token, then runs TR's current **v2 push-approval** login
+   (`/api/v2/auth/web/login`): there is no 4-digit code anymore — the user
+   approves the login from a prompt in the Trade Republic mobile app, and the
+   library polls until approved (`tr_api.auth.web_login_v2`). The legacy v1
+   4-digit-code flow (`/api/v1/auth/web/login`) is kept as a fallback but TR
+   now returns `426 CLIENT_VERSION_OUTDATED` for it. See `docs/auth-modes.md`.
 
 Both modes leave you with the same per-profile cookie jar that powers all
 subsequent API calls.
@@ -119,11 +123,13 @@ tr-api transactions --since 7d
 pipx install "tr-api[browser] @ git+https://github.com/cdamken/tr-api.git"
 playwright install chromium
 
-# 2. Log in once (TR pushes a 4-digit code to your mobile app)
-tr-api login --phone +491701234567 --pin 1234
-# >> Push sent. Enter code: 5678
+# 2. Log in once (v2 push-approval — approve the prompt in your TR mobile app)
+tr-api login --v2 --phone +491701234567 --pin 1234
+# >> 📱 Approve the login in your Trade Republic mobile app…
 # >> Saved cookies to ~/.tr-api/profiles/+491701234567/cookies.txt
 # >> Active profile set.
+# (Legacy `tr-api login` without --v2 uses the old 4-digit-code flow, which
+#  TR now rejects with 426 CLIENT_VERSION_OUTDATED.)
 
 # 3. Use it
 tr-api portfolio
@@ -139,13 +145,11 @@ from tr_api import (
     auth,
 )
 
-# First-time login (per-account, one-shot)
-init = auth.initiate_login("+491701234567", "1234")
-# … prompt the user for the 4-digit code that TR just pushed …
-result = auth.complete_login(init.process_id, "5678")
-
-# Save and activate
+# First-time login (per-account, one-shot) — v2 push-approval.
+# No 4-digit code: the user approves the login in the TR mobile app; this
+# blocks (polling) until they approve or ~90s elapses.
 prof = profiles.create("+491701234567")
+result = auth.web_login_v2(prof, "1234")   # ← approve in the TR app now
 profiles.set_active(prof.phone)
 from tr_api import cookies as c
 c.save_to_file(result.cookies, prof.cookies_file)

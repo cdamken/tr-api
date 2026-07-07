@@ -81,19 +81,21 @@ fingerprint-blocking heuristic) and retry. Persistent 405s are usually
 a sign that Chrome's UA fingerprint has shifted ahead of `tr-api`'s
 hardcoded one in `client.py:DEFAULT_USER_AGENT` — bump it.
 
-### MFA code never arrives on the phone
+### Login approval never lands (v2 push-approval)
 
-**What it means**: TR's push to the mobile app failed. Possible reasons:
+**What it means**: with the v2 flow the login stays `PENDING` until you approve
+it in the TR mobile app; if you don't approve within TR's ~90s window it
+expires (`410 PROCESS_GONE`). Reasons it never lands:
 
-- The TR mobile app is logged out / not installed → TR may fall back
-  to SMS automatically (look at `InitiateResult.two_factor_method`).
-- The phone is offline / push notifications are disabled.
-- TR's push pipeline is having a bad day (rare but not unheard of).
+- You didn't approve in time → start the login again and approve promptly.
+- The TR mobile app is logged out / not installed, or push notifications are
+  off → open the app; the approval prompt also shows **in-app**, not only as a
+  push notification.
+- The phone is offline / TR's push pipeline is having a bad day (rare).
 
-**Fix**: wait ~60 seconds, then call `initiate_login` again — the
-second push usually goes through. If TR consistently routes via SMS
-instead of the app, that's expected for older accounts; just type in
-the SMS code.
+**Fix**: re-run the login (`auth.web_login_v2` / `tr-api login --v2`) and
+approve the prompt in the app within ~90s. (v2 has no SMS/code fallback —
+it's approve-in-app only.)
 
 ### MFA code "expired" almost immediately
 
