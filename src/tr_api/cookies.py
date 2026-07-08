@@ -15,6 +15,7 @@ Public API:
 """
 from __future__ import annotations
 
+import os
 import time
 from http.cookiejar import Cookie, MozillaCookieJar
 from pathlib import Path
@@ -161,9 +162,14 @@ def save_to_file(cookies: dict[str, str], path: Path | str) -> int:
             )
         )
 
-    jar.save(ignore_discard=True, ignore_expires=True)
-    # Restrict permissions: cookies are session secrets.
-    path.chmod(0o600)
+    # Atomic write: cookies are session secrets, so create the real file with
+    # 0600 already in place (write to a sibling .tmp, chmod, then rename).
+    # Chmod-after-write on the final path leaves a umask-race window where the
+    # file is briefly world-readable on a shared host.
+    tmp = path.with_name(path.name + ".tmp")
+    jar.save(str(tmp), ignore_discard=True, ignore_expires=True)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
     return len(jar)
 
 
