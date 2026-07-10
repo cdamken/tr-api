@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import account, auth, cookies, documents, portfolio, profiles, timeline_detail, transactions
+from . import account, auth, cookies, documents, portfolio, profiles, savings_plans, timeline_detail, transactions
 from .auth import InvalidCredentials, LoginError, RateLimited
 from .client import TrClient
 from .exceptions import (
@@ -383,6 +383,12 @@ def cmd_cash(args: argparse.Namespace) -> Any:
         return portfolio.cash(c)
 
 
+def cmd_savings(args: argparse.Namespace) -> Any:
+    p = _resolve_profile(args.phone)
+    with TrClient(p) as c:
+        return {"savings_plans": savings_plans.list_plans(c)}
+
+
 def cmd_history(args: argparse.Namespace) -> Any:
     p = _resolve_profile(args.phone)
     with TrClient(p) as c:
@@ -643,6 +649,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("cash", help="Fetch cash balances")
     sp.add_argument("--phone", default=None)
     sp.set_defaults(func=cmd_cash)
+
+    sp = sub.add_parser("savings", help="List savings plans (ISIN, amount, interval, next execution)")
+    sp.add_argument("--phone", default=None)
+    sp.set_defaults(func=cmd_savings)
 
     sp = sub.add_parser("history", help="Fetch portfolio value history")
     sp.add_argument("--phone", default=None)
